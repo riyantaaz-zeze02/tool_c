@@ -1,0 +1,51 @@
+# default_config.yaml — Konfigurasi Aturan Pembersihan & Format Excel
+
+# Aturan Penanganan Missing Value
+missing:
+  numeric_strategy: median    # Pilihan: median | mean | mode | constant | interpolate
+  text_strategy: constant     # Pilihan: constant | ffill | bfill
+  numeric_constant: 0
+  text_constant: Unknown
+  datetime_strategy: keep_nat # Pilihan: keep_nat | mode | ffill | bfill
+  drop_threshold: null        # Contoh: 0.5 (drop baris jika >50% kolom kosong)
+
+# Aturan Deduplikasi
+duplicate:
+  subset: null                # null = semua kolom, atau list: ['email', 'nama']
+  keep: first                 # Pilihan: first | last | false
+
+# Aturan Parsing Angka & Finansial
+number:
+  auto_detect: true           # Deteksi otomatis simbol mata uang dan pemisah ribuan
+  kolom_angka: []
+  kolom_currency: []
+  kolom_persen: []
+
+# Aturan Normalisasi Tanggal
+date:
+  auto_detect: true           # Deteksi otomatis kolom tanggal
+  kolom_tanggal: []
+  output_format: "%Y-%m-%d"
+
+# Aturan Normalisasi Teks
+text:
+  case_format: title          # Pilihan: title | upper | lower | sentence | null
+  only_name_columns: true     # Terapkan Title Case hanya ke kolom nama/judul (misal: artist, tour, nama, kota)
+  kolom_case: []              # Kolom spesifik untuk kapitalisasi (kosong = auto deteksi kolom nama)
+  preserve_brackets: true     # Pertahankan teks dalam kurung siku [LIVE], [VIP], dll.
+  preserve_acronyms: true     # Pertahankan akronim all-caps (VIP, USA, IDR, dll.)
+  custom_acronyms: []         # Daftar akronim kustom tambahan jika ada
+  strip_whitespace: true      # Hapus spasi berlebih di awal/akhir dan multi-spasi
+  normalize_unicode: true     # Normalisasi karakter unicode aneh / non-breaking space
+  remove_non_ascii: false
+  kolom_exclude:
+    - email
+    - e-mail
+
+# Aturan Tampilan & Styling Excel
+formatting:
+  theme: corporate_blue       # Pilihan: corporate_blue | modern_slate | emerald_green | sunset_coral | classic_excel
+  currency: IDR               # Pilihan: IDR | USD
+  sheet_name: Data Bersih
+  add_total_row: true         # Tambahkan baris TOTAL otomatis dengan rumus =SUM()
+  include_summary_sheet: true # Tambahkan sheet kedua laporan audit pembersihan
