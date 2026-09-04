@@ -9,7 +9,7 @@ import pytest
 from cleaner.rules.missing_handler import tangani_missing
 from cleaner.rules.duplicate_handler import hapus_duplikat
 from cleaner.rules.text_cleaner import bersihkan_teks
-from cleaner.rules.number_cleaner import bersihkan_angka
+from cleaner.rules.number_cleaner import bersihkan_angka, _parse_currency, _parse_angka
 from cleaner.rules.date_cleaner import bersihkan_tanggal
 
 
@@ -122,4 +122,31 @@ def test_kolom_case_explicit_override():
     cleaned, log = bersihkan_teks(df, {"case_format": "title", "kolom_case": ["Artist"]})
     assert cleaned["Artist"].iloc[0] == "Taylor Swift"
     assert cleaned["Tour title"].iloc[0] == "the eras tour"
+
+
+def test_parse_currency_with_footnotes():
+    assert _parse_currency("$229,100,000[b]") == 229100000.0
+    assert _parse_currency("$167,700,000[e]") == 167700000.0
+    assert _parse_currency("$500,000[a][b]") == 500000.0
+    assert _parse_currency("$1,000,000[17]") == 1000000.0
+    assert _parse_currency("Rp 2.500.000,00[1]") == 2500000.0
+
+
+def test_parse_angka_with_footnotes():
+    assert _parse_angka("100,000[b]") == 100000.0
+    assert _parse_angka("1,000,000[17]") == 1000000.0
+    assert _parse_angka("229,100,000[a][b]") == 229100000.0
+    assert _parse_angka("1.500.000[3]") == 1500000.0
+
+
+def test_number_cleaner_currency_dataframe_with_footnotes():
+    df = pd.DataFrame({
+        "Gross": ["$229,100,000[b]", "$167,700,000[e]", "$500,000[a][b]"]
+    })
+    cleaned, log = bersihkan_angka(df, {"kolom_currency": ["Gross"]})
+    assert cleaned["Gross"].iloc[0] == 229100000.0
+    assert cleaned["Gross"].iloc[1] == 167700000.0
+    assert cleaned["Gross"].iloc[2] == 500000.0
+    assert not cleaned["Gross"].isnull().any()
+
 

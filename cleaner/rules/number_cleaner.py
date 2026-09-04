@@ -120,6 +120,9 @@ def _parse_currency(value):
 
     value = str(value).strip()
 
+    # Hapus footnote seperti [a], [b], [17], dll.
+    value = re.sub(r"\[[^\]]*\]", "", value).strip()
+
     # Hapus simbol mata uang
     value = re.sub(r"(Rp\.?\s*|USD\s*|\$|€|£|¥)", "", value).strip()
 
@@ -157,6 +160,9 @@ def _parse_angka(value):
         return None
 
     value = str(value).strip()
+
+    # Hapus footnote seperti [a], [b], [17], dll.
+    value = re.sub(r"\[[^\]]*\]", "", value).strip()
 
     # Deteksi format Indonesia vs US
     if re.match(r"^[\d]+\.[\d]{3}", value):
