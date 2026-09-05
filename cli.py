@@ -14,6 +14,8 @@ import yaml
 
 from cleaner.engine import CleaningEngine
 from cleaner.formatter.themes import THEMES
+from cleaner.reader import get_sheet_names
+
 
 
 def load_yaml_config(config_path):
@@ -41,14 +43,9 @@ def process_single_file(file_path, args, engine, config):
     print(f"🚀 Memproses: {file_path}")
     print("=" * 60)
 
-    try:
-        df, report = engine.clean(file_path)
-    except Exception as e:
-        print(f"❌ Terjadi kesalahan saat membersihkan {file_path}: {e}")
-        return False
-
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     out_format = args.format.lower()
+    ekstensi = os.path.splitext(file_path)[1].lower()
 
     if args.output:
         if os.path.isdir(args.output):
@@ -67,29 +64,94 @@ def process_single_file(file_path, args, engine, config):
     add_total = not args.no_total if args.no_total is not None else formatting_cfg.get("add_total_row", True)
     include_summary = not args.no_summary if args.no_summary is not None else formatting_cfg.get("include_summary_sheet", True)
 
-    if out_format == "excel":
-        engine.export_excel(
-            df,
-            out_file,
-            report=report,
-            theme=theme,
-            currency=currency,
-            sheet_name=sheet_name,
-            add_total_row=add_total,
-            include_summary_sheet=include_summary,
-        )
-    else:
-        os.makedirs(os.path.dirname(out_file), exist_ok=True)
-        df.to_csv(out_file, index=False)
-        print(f"💾 File CSV berhasil disimpan ke: {out_file}")
+    if ekstensi in [".xlsx", ".xls"]:
+        available_sheets = get_sheet_names(file_path)
+        print(f"📋 File ini punya {len(available_sheets)} sheet: {', '.join(available_sheets)}")
 
-    print()
-    print("📊 Ringkasan:")
-    print(f"   - Baris awal: {report['baris_awal']} | Baris akhir: {report['baris_akhir']}")
-    print(f"   - Duplikat dihapus: {report['total_duplikat_dihapus']}")
-    print("=" * 60)
-    print()
-    return True
+        if getattr(args, "all_sheets", False):
+            target_sheets = available_sheets
+        elif getattr(args, "sheets", None):
+            target_sheets = [s.strip() for s in args.sheets.split(",") if s.strip()]
+            for s in target_sheets:
+                if s not in available_sheets:
+                    print(f"❌ Error: Sheet '{s}' tidak ditemukan di file. Sheet yang tersedia: {', '.join(available_sheets)}")
+                    return False
+        else:
+            # Perilaku default: sheet pertama
+            target_sheets = [available_sheets[0]] if available_sheets else [0]
+
+        print(f"🎯 Sheet yang dipilih untuk dibersihkan: {', '.join(str(s) for s in target_sheets)}")
+        unselected = [s for s in available_sheets if s not in target_sheets]
+        if unselected:
+            print(f"📌 Sheet yang tidak dipilih akan disalin apa adanya: {', '.join(unselected)}")
+        print()
+
+        try:
+            cleaned_results = engine.clean_sheets(file_path, sheets=target_sheets)
+        except Exception as e:
+            print(f"❌ Terjadi kesalahan saat membersihkan {file_path}: {e}")
+            return False
+
+        if out_format == "excel":
+            engine.export_excel(
+                cleaned_results,
+                out_file,
+                theme=theme,
+                currency=currency,
+                add_total_row=add_total,
+                include_summary_sheet=include_summary,
+                original_file_path=file_path,
+            )
+        else:
+            os.makedirs(os.path.dirname(out_file), exist_ok=True)
+            for s_name, data in cleaned_results.items():
+                s_out = out_file if len(cleaned_results) == 1 else out_file.replace(".csv", f"_{s_name}.csv")
+                data["df"].to_csv(s_out, index=False)
+                print(f"💾 File CSV berhasil disimpan ke: {s_out}")
+
+        print()
+        print("📊 Ringkasan Pembersihan per Sheet:")
+        for s_name, res in cleaned_results.items():
+            rep = res["report"]
+            print(f"   • [{s_name}]")
+            print(f"     - Baris: {rep['baris_awal']} ➔ {rep['baris_akhir']}")
+            print(f"     - Duplikat dihapus: {rep['total_duplikat_dihapus']}")
+            print(f"     - Baris didrop: {rep['total_baris_didrop']}")
+        print("=" * 60)
+        print()
+        return True
+
+    else:
+        # File CSV tunggal
+        try:
+            df, report = engine.clean(file_path)
+        except Exception as e:
+            print(f"❌ Terjadi kesalahan saat membersihkan {file_path}: {e}")
+            return False
+
+        if out_format == "excel":
+            engine.export_excel(
+                df,
+                out_file,
+                report=report,
+                theme=theme,
+                currency=currency,
+                sheet_name=sheet_name,
+                add_total_row=add_total,
+                include_summary_sheet=include_summary,
+            )
+        else:
+            os.makedirs(os.path.dirname(out_file), exist_ok=True)
+            df.to_csv(out_file, index=False)
+            print(f"💾 File CSV berhasil disimpan ke: {out_file}")
+
+        print()
+        print("📊 Ringkasan:")
+        print(f"   - Baris awal: {report['baris_awal']} | Baris akhir: {report['baris_akhir']}")
+        print(f"   - Duplikat dihapus: {report['total_duplikat_dihapus']}")
+        print("=" * 60)
+        print()
+        return True
 
 
 def main():
@@ -99,6 +161,16 @@ def main():
     parser.add_argument(
         "input",
         help="Path ke file input (CSV/Excel) atau direktori jika menggunakan mode -b/--batch",
+    )
+    parser.add_argument(
+        "-s", "--sheets",
+        help="Daftar nama sheet yang mau dibersihkan, dipisah koma (contoh: --sheets 'Penjualan,Pelanggan')",
+        default=None,
+    )
+    parser.add_argument(
+        "--all-sheets",
+        action="store_true",
+        help="Bersihkan SEMUA sheet yang ada di file Excel sekaligus",
     )
     parser.add_argument(
         "-o", "--output",
@@ -142,6 +214,7 @@ def main():
         action="store_true",
         help="Mode batch: bersihkan semua file .csv dan .xlsx di direktori input",
     )
+
 
     args = parser.parse_args()
 

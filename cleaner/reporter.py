@@ -45,14 +45,15 @@ class CleaningReporter:
     def __init__(self, theme="corporate_blue"):
         self.theme = get_theme(theme)
 
-    def add_summary_sheet(self, wb, report_dict, df_cleaned, title="Cleaning Summary"):
+    def add_summary_sheet(self, wb, report_dict, df_cleaned=None, title="Cleaning Summary"):
         """
         Menambahkan worksheet 'Cleaning Summary' ke workbook Excel.
+        Mendukung laporan single-sheet maupun multi-sheet (laporan terpisah per sheet).
 
         Parameter:
             wb (openpyxl.Workbook): Workbook yang sedang dibuat.
-            report_dict (dict): Laporan dari CleaningEngine.clean().
-            df_cleaned (pd.DataFrame): Dataframe hasil pembersihan.
+            report_dict (dict | list): Laporan dari CleaningEngine.clean() atau dict per sheet.
+            df_cleaned (pd.DataFrame | dict | None): Dataframe hasil pembersihan.
             title (str): Judul sheet summary (default: 'Cleaning Summary').
         """
         ws = wb.create_sheet(title=title)
@@ -87,87 +88,226 @@ class CleaningReporter:
         waktu_str = datetime.now().strftime("%d %B %Y, %H:%M:%S")
         ws.cell(row=3, column=2, value=f"YANTTT — {waktu_str}").font = subtitle_font
 
-        # 2. Ringkasan Metrik Kunci (Key Metrics)
-        ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
+        # Normalisasi input ke list of (sheet_name, report, df)
+        sheet_reports = []
+        if isinstance(report_dict, dict) and ("langkah" in report_dict or "baris_awal" in report_dict):
+            # Single sheet report
+            s_name = report_dict.get("sumber", "Data")
+            sheet_reports.append((s_name, report_dict, df_cleaned))
+        elif isinstance(report_dict, dict):
+            # Dict of sheets: {"Sheet1": {"report": ..., "df": ...}} or {"Sheet1": report_dict}
+            for s_name, val in report_dict.items():
+                if isinstance(val, dict) and "report" in val:
+                    sheet_reports.append((s_name, val["report"], val.get("df")))
+                elif isinstance(val, dict):
+                    d = df_cleaned.get(s_name) if isinstance(df_cleaned, dict) else None
+                    sheet_reports.append((s_name, val, d))
+        elif isinstance(report_dict, list):
+            for item in report_dict:
+                if isinstance(item, tuple) and len(item) == 3:
+                    sheet_reports.append(item)
+                elif isinstance(item, tuple) and len(item) == 2:
+                    sheet_reports.append((item[0], item[1], None))
 
-        metrics = [
-            ("Source File", report_dict.get("sumber", "Input File")),
-            ("Initial Row Count", report_dict.get("baris_awal", 0)),
-            ("Final Row Count", report_dict.get("baris_akhir", 0)),
-            ("Duplicate Rows Removed", report_dict.get("total_duplikat_dihapus", 0)),
-            ("Dropped Rows (Missing)", report_dict.get("total_baris_didrop", 0)),
-            ("Total Columns", report_dict.get("kolom_akhir", 0)),
-        ]
+        # Jika hanya 1 sheet: gunakan format klasik yang kompatibel penuh dengan test yang ada
+        if len(sheet_reports) <= 1:
+            single_rep = sheet_reports[0][1] if sheet_reports else (report_dict if isinstance(report_dict, dict) else {})
+            single_df = sheet_reports[0][2] if sheet_reports else df_cleaned
 
-        for idx, (label, val) in enumerate(metrics, start=6):
-            c_label = ws.cell(row=idx, column=2, value=label)
-            c_label.font = label_font
-            c_label.border = thin_border
-            c_label.fill = zebra_fill
+            # 2. Ringkasan Metrik Kunci (Key Metrics)
+            ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
 
-            c_val = ws.cell(row=idx, column=3, value=val)
-            c_val.font = value_font
-            c_val.border = thin_border
-            if isinstance(val, (int, float)):
-                c_val.alignment = Alignment(horizontal="right")
-                c_val.number_format = "#,##0"
-
-        # 3. Tabel Detail Perubahan per Kolom (Column Status Details)
-        row_detail_start = 14
-        ws.cell(row=row_detail_start - 1, column=2, value="COLUMN STATUS DETAILS").font = section_font
-
-        headers = ["No", "Column Name", "Final Data Type", "Missing Found", "Cleaning Action"]
-        for col_i, h_text in enumerate(headers, start=2):
-            cell = ws.cell(row=row_detail_start, column=col_i, value=h_text)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = thin_border
-
-        missing_log = report_dict.get("langkah", {}).get("missing", {}).get("missing_sebelum", {})
-        actions_list = []
-        for step in ["number", "date", "missing", "text"]:
-            step_actions = report_dict.get("langkah", {}).get(step, {}).get("aksi", [])
-            actions_list.extend(step_actions)
-
-        for col_idx, col_name in enumerate(df_cleaned.columns, start=1):
-            r = row_detail_start + col_idx
-            is_z = (col_idx % 2 == 1)
-            row_fill = zebra_fill if is_z else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-
-            # Cari aksi yang relevan untuk kolom ini
-            col_actions = [a for a in actions_list if f"'{col_name}'" in a]
-            if col_actions:
-                translated_actions = [_translate_action(a) for a in col_actions]
-                action_desc = "; ".join(translated_actions)
-            else:
-                action_desc = "Data already clean"
-
-            row_data = [
-                col_idx,
-                col_name,
-                str(df_cleaned[col_name].dtype),
-                missing_log.get(col_name, 0),
-                action_desc,
+            metrics = [
+                ("Source File", single_rep.get("sumber", "Input File")),
+                ("Initial Row Count", single_rep.get("baris_awal", 0)),
+                ("Final Row Count", single_rep.get("baris_akhir", 0)),
+                ("Duplicate Rows Removed", single_rep.get("total_duplikat_dihapus", 0)),
+                ("Dropped Rows (Missing)", single_rep.get("total_baris_didrop", 0)),
+                ("Total Columns", single_rep.get("kolom_akhir", 0)),
             ]
 
-            for c_i, val in enumerate(row_data, start=2):
-                cell = ws.cell(row=r, column=c_i, value=val)
-                cell.font = value_font
-                cell.fill = row_fill
-                cell.border = thin_border
-                if c_i == 2:
-                    cell.alignment = Alignment(horizontal="center")
-                elif c_i == 5:
-                    cell.alignment = Alignment(horizontal="right")
-                    cell.number_format = "#,##0"
+            for idx, (label, val) in enumerate(metrics, start=6):
+                c_label = ws.cell(row=idx, column=2, value=label)
+                c_label.font = label_font
+                c_label.border = thin_border
+                c_label.fill = zebra_fill
 
-        # Auto-width kolom di sheet Ringkasan
-        for c in range(2, 7):
-            c_letter = get_column_letter(c)
-            max_len = 0
-            for r in range(2, row_detail_start + len(df_cleaned.columns) + 2):
-                v = ws.cell(row=r, column=c).value
-                if v is not None:
-                    max_len = max(max_len, len(str(v)))
-            ws.column_dimensions[c_letter].width = max(max_len + 4, 15)
+                c_val = ws.cell(row=idx, column=3, value=val)
+                c_val.font = value_font
+                c_val.border = thin_border
+                if isinstance(val, (int, float)):
+                    c_val.alignment = Alignment(horizontal="right")
+                    c_val.number_format = "#,##0"
+
+            # 3. Tabel Detail Perubahan per Kolom (Column Status Details)
+            row_detail_start = 14
+            ws.cell(row=row_detail_start - 1, column=2, value="COLUMN STATUS DETAILS").font = section_font
+
+            headers = ["No", "Column Name", "Final Data Type", "Missing Found", "Cleaning Action"]
+            for col_i, h_text in enumerate(headers, start=2):
+                cell = ws.cell(row=row_detail_start, column=col_i, value=h_text)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            if single_df is not None:
+                missing_log = single_rep.get("langkah", {}).get("missing", {}).get("missing_sebelum", {})
+                actions_list = []
+                for step in ["number", "date", "missing", "text"]:
+                    step_actions = single_rep.get("langkah", {}).get(step, {}).get("aksi", [])
+                    actions_list.extend(step_actions)
+
+                for col_idx, col_name in enumerate(single_df.columns, start=1):
+                    r = row_detail_start + col_idx
+                    is_z = (col_idx % 2 == 1)
+                    row_fill = zebra_fill if is_z else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+                    col_actions = [a for a in actions_list if f"'{col_name}'" in a]
+                    if col_actions:
+                        translated_actions = [_translate_action(a) for a in col_actions]
+                        action_desc = "; ".join(translated_actions)
+                    else:
+                        action_desc = "Data already clean"
+
+                    row_data = [
+                        col_idx,
+                        col_name,
+                        str(single_df[col_name].dtype),
+                        missing_log.get(col_name, 0),
+                        action_desc,
+                    ]
+
+                    for c_i, val in enumerate(row_data, start=2):
+                        cell = ws.cell(row=r, column=c_i, value=val)
+                        cell.font = value_font
+                        cell.fill = row_fill
+                        cell.border = thin_border
+                        if c_i == 2:
+                            cell.alignment = Alignment(horizontal="center")
+                        elif c_i == 5:
+                            cell.alignment = Alignment(horizontal="right")
+                            cell.number_format = "#,##0"
+
+            # Auto-width kolom
+            for c in range(2, 7):
+                c_letter = get_column_letter(c)
+                max_len = 0
+                max_row = row_detail_start + (len(single_df.columns) if single_df is not None else 6) + 2
+                for r in range(2, max_row):
+                    v = ws.cell(row=r, column=c).value
+                    if v is not None:
+                        max_len = max(max_len, len(str(v)))
+                ws.column_dimensions[c_letter].width = max(max_len + 4, 15)
+
+        else:
+            # Multi-sheet: Laporan TERPISAH per sheet (Requirement 5)
+            # 2. Tabel Ringkasan Metrik Kunci per Sheet
+            ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
+
+            table_headers = [
+                "No", "Sheet Name", "Initial Rows", "Final Rows",
+                "Duplicates Removed", "Dropped Rows", "Total Columns"
+            ]
+            for col_i, h_text in enumerate(table_headers, start=2):
+                cell = ws.cell(row=6, column=col_i, value=h_text)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            current_row = 7
+            for s_idx, (s_name, s_rep, s_df) in enumerate(sheet_reports, start=1):
+                is_z = (s_idx % 2 == 1)
+                row_fill = zebra_fill if is_z else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+                row_metrics = [
+                    s_idx,
+                    s_name,
+                    s_rep.get("baris_awal", len(s_df) if s_df is not None else 0),
+                    s_rep.get("baris_akhir", len(s_df) if s_df is not None else 0),
+                    s_rep.get("total_duplikat_dihapus", 0),
+                    s_rep.get("total_baris_didrop", 0),
+                    s_rep.get("kolom_akhir", len(s_df.columns) if s_df is not None else 0),
+                ]
+
+                for col_i, val in enumerate(row_metrics, start=2):
+                    cell = ws.cell(row=current_row, column=col_i, value=val)
+                    cell.font = value_font
+                    cell.fill = row_fill
+                    cell.border = thin_border
+                    if col_i == 2:
+                        cell.alignment = Alignment(horizontal="center")
+                    elif col_i >= 4:
+                        cell.alignment = Alignment(horizontal="right")
+                        cell.number_format = "#,##0"
+
+                current_row += 1
+
+            # 3. Rincian Kolom Terpisah untuk Setiap Sheet
+            current_row += 2
+            col_headers = ["No", "Column Name", "Final Data Type", "Missing Found", "Cleaning Action"]
+
+            for s_name, s_rep, s_df in sheet_reports:
+                ws.cell(row=current_row, column=2, value=f"COLUMN STATUS DETAILS — {s_name}").font = section_font
+                current_row += 1
+
+                for col_i, h_text in enumerate(col_headers, start=2):
+                    cell = ws.cell(row=current_row, column=col_i, value=h_text)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border = thin_border
+                current_row += 1
+
+                if s_df is not None:
+                    missing_log = s_rep.get("langkah", {}).get("missing", {}).get("missing_sebelum", {})
+                    actions_list = []
+                    for step in ["number", "date", "missing", "text"]:
+                        step_actions = s_rep.get("langkah", {}).get(step, {}).get("aksi", [])
+                        actions_list.extend(step_actions)
+
+                    for col_idx, col_name in enumerate(s_df.columns, start=1):
+                        is_z = (col_idx % 2 == 1)
+                        row_fill = zebra_fill if is_z else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+                        col_actions = [a for a in actions_list if f"'{col_name}'" in a]
+                        if col_actions:
+                            translated_actions = [_translate_action(a) for a in col_actions]
+                            action_desc = "; ".join(translated_actions)
+                        else:
+                            action_desc = "Data already clean"
+
+                        row_data = [
+                            col_idx,
+                            col_name,
+                            str(s_df[col_name].dtype),
+                            missing_log.get(col_name, 0),
+                            action_desc,
+                        ]
+
+                        for c_i, val in enumerate(row_data, start=2):
+                            cell = ws.cell(row=current_row, column=c_i, value=val)
+                            cell.font = value_font
+                            cell.fill = row_fill
+                            cell.border = thin_border
+                            if c_i == 2:
+                                cell.alignment = Alignment(horizontal="center")
+                            elif c_i == 5:
+                                cell.alignment = Alignment(horizontal="right")
+                                cell.number_format = "#,##0"
+
+                        current_row += 1
+
+                current_row += 2
+
+            # Auto-width kolom untuk semua baris
+            for c in range(2, 9):
+                c_letter = get_column_letter(c)
+                max_len = 0
+                for r in range(2, current_row):
+                    v = ws.cell(row=r, column=c).value
+                    if v is not None:
+                        max_len = max(max_len, len(str(v)))
+                ws.column_dimensions[c_letter].width = max(max_len + 4, 15)
+

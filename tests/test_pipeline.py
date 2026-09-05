@@ -40,3 +40,123 @@ def test_full_pipeline_on_sample_csv(tmp_path):
     assert "YANTTT" in str(ws_summary["B3"].value)
     assert ws_summary["B5"].value == "KEY METRICS"
     assert ws_summary["B13"].value == "COLUMN STATUS DETAILS"
+
+
+def _create_dummy_3sheet_excel(file_path):
+    """Helper untuk membuat file Excel 3 sheet untuk testing."""
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "Penjualan"
+    ws1.append(["tanggal", "produk", "harga", "kuantitas"])
+    ws1.append(["2024-01-15", "  LAPTOP ASUS [VIP]  ", "Rp 15.000.000", 2])
+    ws1.append(["2024-01-15", "  LAPTOP ASUS [VIP]  ", "Rp 15.000.000", 2])
+    ws1.append(["2024-02-10", "mouse wireless", "150.000", 5])
+
+    ws2 = wb.create_sheet("Pelanggan")
+    ws2.append(["id", "nama_pelanggan", "kota", "status"])
+    ws2.append([1, "budi santoso [VIP]", "jakarta", "aktif"])
+    ws2.append([1, "budi santoso [VIP]", "jakarta", "aktif"])
+    ws2.append([2, "siti aminah", "BANDUNG", "aktif"])
+    ws2.append([3, "ahmad dahlan", "surabaya", None])
+
+    ws3 = wb.create_sheet("Ringkasan")
+    ws3["A1"] = "LAPORAN EKSEKUTIF"
+    ws3["A2"] = "Total Target:"
+    ws3["B2"] = "=SUM(1000, 2500, 1500)"
+    ws3["A3"] = "Catatan:"
+    ws3["B3"] = "Formula dan formatting asli harus utuh"
+
+    wb.save(file_path)
+    return file_path
+
+
+def test_multisheet_process_single_sheet_preserves_others(tmp_path):
+    """Skenario 1: Memproses hanya 1 sheet spesifik, sheet lain tetap ada dan utuh."""
+    input_file = str(tmp_path / "input_3sheet.xlsx")
+    _create_dummy_3sheet_excel(input_file)
+
+    engine = CleaningEngine()
+    # Bersihkan hanya sheet 'Penjualan'
+    cleaned_results = engine.clean_sheets(input_file, sheets=["Penjualan"])
+    assert "Penjualan" in cleaned_results
+    assert len(cleaned_results["Penjualan"]["df"]) == 2  # duplikat dihapus dari 3 jadi 2
+
+    out_file = str(tmp_path / "output_single_sheet.xlsx")
+    engine.export_excel(
+        cleaned_results,
+        out_file,
+        original_file_path=input_file,
+    )
+
+    wb_out = openpyxl.load_workbook(out_file)
+    assert "Penjualan" in wb_out.sheetnames
+    assert "Pelanggan" in wb_out.sheetnames
+    assert "Ringkasan" in wb_out.sheetnames
+    assert "Cleaning Summary" in wb_out.sheetnames
+
+    # Pastikan sheet yang tidak disentuh (Ringkasan) formulanya tetap utuh
+    assert wb_out["Ringkasan"]["B2"].value == "=SUM(1000, 2500, 1500)"
+
+
+def test_multisheet_process_multiple_sheets_and_report(tmp_path):
+    """Skenario 2: Memproses beberapa sheet sekaligus dengan audit report per sheet."""
+    input_file = str(tmp_path / "input_3sheet.xlsx")
+    _create_dummy_3sheet_excel(input_file)
+
+    engine = CleaningEngine()
+    # Bersihkan sheet 'Penjualan' dan 'Pelanggan'
+    cleaned_results = engine.clean_sheets(input_file, sheets=["Penjualan", "Pelanggan"])
+    assert "Penjualan" in cleaned_results
+    assert "Pelanggan" in cleaned_results
+
+    out_file = str(tmp_path / "output_multi.xlsx")
+    engine.export_excel(
+        cleaned_results,
+        out_file,
+        original_file_path=input_file,
+    )
+
+    wb_out = openpyxl.load_workbook(out_file)
+    assert "Penjualan" in wb_out.sheetnames
+    assert "Pelanggan" in wb_out.sheetnames
+    assert "Ringkasan" in wb_out.sheetnames
+    assert "Cleaning Summary" in wb_out.sheetnames
+
+    ws_sum = wb_out["Cleaning Summary"]
+    assert ws_sum["B2"].value == "DATA CLEANING AUDIT REPORT"
+    assert ws_sum["B5"].value == "KEY METRICS"
+    # Cek bahwa laporan mencatat baris per-sheet
+    sheet_names_in_summary = [ws_sum.cell(row=r, column=3).value for r in [7, 8]]
+    assert "Penjualan" in sheet_names_in_summary
+    assert "Pelanggan" in sheet_names_in_summary
+
+
+def test_multisheet_unselected_sheet_untouched(tmp_path):
+    """Skenario 3: Memastikan sheet yang tidak dipilih benar-benar tidak berubah di output."""
+    input_file = str(tmp_path / "input_3sheet.xlsx")
+    _create_dummy_3sheet_excel(input_file)
+
+    engine = CleaningEngine()
+    # Proses hanya sheet 'Pelanggan'
+    cleaned_results = engine.clean_sheets(input_file, sheets=["Pelanggan"])
+
+    out_file = str(tmp_path / "output_unselected_test.xlsx")
+    engine.export_excel(
+        cleaned_results,
+        out_file,
+        original_file_path=input_file,
+    )
+
+    wb_in = openpyxl.load_workbook(input_file)
+    wb_out = openpyxl.load_workbook(out_file)
+
+    # Validasi seluruh sel di sheet Ringkasan sama persis antara input dan output
+    ws_in_ringkasan = wb_in["Ringkasan"]
+    ws_out_ringkasan = wb_out["Ringkasan"]
+
+    assert ws_out_ringkasan["A1"].value == ws_in_ringkasan["A1"].value == "LAPORAN EKSEKUTIF"
+    assert ws_out_ringkasan["A2"].value == ws_in_ringkasan["A2"].value == "Total Target:"
+    assert ws_out_ringkasan["B2"].value == ws_in_ringkasan["B2"].value == "=SUM(1000, 2500, 1500)"
+    assert ws_out_ringkasan["A3"].value == ws_in_ringkasan["A3"].value == "Catatan:"
+    assert ws_out_ringkasan["B3"].value == ws_in_ringkasan["B3"].value == "Formula dan formatting asli harus utuh"
+

@@ -37,6 +37,26 @@ def read_csv_with_fallback(file_path_or_buffer, **kwargs):
     return pd.read_csv(file_path_or_buffer, **kwargs)
 
 
+def get_sheet_names(file_path):
+    """
+    Mengambil daftar nama sheet dari file Excel (.xlsx / .xls).
+
+    Parameter:
+        file_path (str): Lokasi file yang mau dibaca.
+
+    Return:
+        list[str]: Daftar nama sheet jika file Excel, atau [] jika CSV.
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File '{file_path}' tidak ditemukan!")
+
+    ekstensi = os.path.splitext(file_path)[1].lower()
+    if ekstensi in [".xlsx", ".xls"]:
+        xl = pd.ExcelFile(file_path)
+        return list(xl.sheet_names)
+    return []
+
+
 def baca_data(file_path, sheet_name=0):
     """
     Membaca file CSV atau Excel dan mengembalikan DataFrame.
@@ -61,8 +81,12 @@ def baca_data(file_path, sheet_name=0):
         df = read_csv_with_fallback(file_path)
         print(f"📖 Berhasil membaca file CSV: {file_path}")
     elif ekstensi in [".xlsx", ".xls"]:
+        all_sheets = get_sheet_names(file_path)
+        if all_sheets:
+            print(f"📋 File ini punya {len(all_sheets)} sheet: {', '.join(all_sheets)}")
         df = pd.read_excel(file_path, sheet_name=sheet_name)
-        print(f"📖 Berhasil membaca file Excel: {file_path}")
+        active_sheet_str = sheet_name if isinstance(sheet_name, str) else (all_sheets[sheet_name] if all_sheets and isinstance(sheet_name, int) and sheet_name < len(all_sheets) else str(sheet_name))
+        print(f"📖 Berhasil membaca file Excel: {file_path} (Sheet: '{active_sheet_str}')")
     else:
         raise ValueError(
             f"Format '{ekstensi}' tidak didukung! Gunakan .csv, .xlsx, atau .xls"
@@ -74,4 +98,5 @@ def baca_data(file_path, sheet_name=0):
     print()
 
     return df
+
 
