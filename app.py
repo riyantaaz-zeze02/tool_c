@@ -72,7 +72,7 @@ with st.sidebar:
         index=0,
     )
     add_total_row = st.checkbox("Tambahkan Baris TOTAL (=SUM)", value=True)
-    include_summary_sheet = st.checkbox("Sertakan Sheet 'Ringkasan Cleaning'", value=True)
+    include_summary_sheet = st.checkbox("Sertakan Sheet 'Cleaning Summary'", value=True)
 
     st.markdown("---")
     st.subheader("🧹 Aturan Pembersihan")

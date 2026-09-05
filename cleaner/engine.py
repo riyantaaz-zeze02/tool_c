@@ -157,7 +157,7 @@ class CleaningEngine:
             currency (str): Mata uang ('IDR', 'USD').
             sheet_name (str): Nama worksheet data utama.
             add_total_row (bool): Apakah menyertakan baris Total dengan formula =SUM.
-            include_summary_sheet (bool): Apakah menyertakan sheet kedua 'Ringkasan Cleaning'.
+            include_summary_sheet (bool): Apakah menyertakan sheet kedua 'Cleaning Summary'.
         """
         # Pastikan direktori output ada
         out_dir = os.path.dirname(output_path)
@@ -189,7 +189,7 @@ class CleaningEngine:
         styler = ExcelStyler(theme=theme, currency=currency)
         styler.style_worksheet(ws, df, add_total_row=add_total_row)
 
-        # Tambahkan Sheet Ringkasan jika diminta
+        # Tambahkan Sheet Cleaning Summary jika diminta
         if include_summary_sheet and (report or self.last_report):
             active_report = report if report is not None else self.last_report
             reporter = CleaningReporter(theme=theme)

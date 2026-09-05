@@ -29,8 +29,14 @@ def test_full_pipeline_on_sample_csv(tmp_path):
     # Validasi isi file Excel
     wb = openpyxl.load_workbook(out_file)
     assert "Data Bersih" in wb.sheetnames
-    assert "Ringkasan Cleaning" in wb.sheetnames
+    assert "Cleaning Summary" in wb.sheetnames
 
     ws_data = wb["Data Bersih"]
     assert ws_data["A1"].value == "nama"
     assert ws_data["E13"].value == "=SUM(E2:E12)"
+
+    ws_summary = wb["Cleaning Summary"]
+    assert ws_summary["B2"].value == "DATA CLEANING AUDIT REPORT"
+    assert "YANTTT" in str(ws_summary["B3"].value)
+    assert ws_summary["B5"].value == "KEY METRICS"
+    assert ws_summary["B13"].value == "COLUMN STATUS DETAILS"

@@ -1,7 +1,7 @@
 """
-reporter.py — Generator Sheet Laporan Audit & Ringkasan Pembersihan
-====================================================================
-Menghasilkan lembar kerja Excel kedua ("Ringkasan Cleaning")
+reporter.py — Generator Sheet Laporan Audit & Ringkasan Pembersihan (Cleaning Summary)
+====================================================================================
+Menghasilkan lembar kerja Excel kedua ("Cleaning Summary")
 yang mencatat metrik transparansi data sebelum vs sesudah.
 """
 
@@ -9,6 +9,32 @@ from datetime import datetime
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from cleaner.formatter.themes import get_theme
+
+
+def _translate_action(action_str: str) -> str:
+    """Menerjemahkan deskripsi aksi pembersihan ke bahasa Inggris."""
+    replacements = [
+        ("strip spasi", "strip whitespace"),
+        ("hapus non-ASCII", "remove non-ASCII"),
+        ("persen → float (desimal)", "percentage → float (decimal)"),
+        ("string angka → float", "numeric string → float"),
+        ("(numerik)", "(numeric)"),
+        ("(datetime)", "(datetime)"),
+        ("(teks)", "(text)"),
+        ("diisi rata-rata (mean)", "imputed with mean"),
+        ("diisi median", "imputed with median"),
+        ("diisi modus", "imputed with mode"),
+        ("diisi konstanta", "filled with constant"),
+        ("diisi 'Tidak Diketahui'", "filled with 'Unknown'"),
+        ("diisi", "filled with"),
+        ("dikonversi ke datetime", "converted to datetime"),
+        ("(dibiarkan)", "(retained)"),
+        ("Data sudah bersih", "Data already clean"),
+    ]
+    res = action_str
+    for id_term, en_term in replacements:
+        res = res.replace(id_term, en_term)
+    return res
 
 
 class CleaningReporter:
@@ -19,16 +45,17 @@ class CleaningReporter:
     def __init__(self, theme="corporate_blue"):
         self.theme = get_theme(theme)
 
-    def add_summary_sheet(self, wb, report_dict, df_cleaned):
+    def add_summary_sheet(self, wb, report_dict, df_cleaned, title="Cleaning Summary"):
         """
-        Menambahkan worksheet 'Ringkasan Cleaning' ke workbook Excel.
+        Menambahkan worksheet 'Cleaning Summary' ke workbook Excel.
 
         Parameter:
             wb (openpyxl.Workbook): Workbook yang sedang dibuat.
             report_dict (dict): Laporan dari CleaningEngine.clean().
             df_cleaned (pd.DataFrame): Dataframe hasil pembersihan.
+            title (str): Judul sheet summary (default: 'Cleaning Summary').
         """
-        ws = wb.create_sheet(title="Ringkasan Cleaning")
+        ws = wb.create_sheet(title=title)
         ws.views.sheetView[0].showGridLines = True
 
         font_family = self.theme["font_name"]
@@ -55,21 +82,21 @@ class CleaningReporter:
             fill_type="solid"
         )
 
-        # 1. Judul & Waktu
-        ws.cell(row=2, column=2, value="LAPORAN AUDIT PEMBERSIHAN DATA").font = title_font
+        # 1. Judul & Waktu (Header & Subtitle)
+        ws.cell(row=2, column=2, value="DATA CLEANING AUDIT REPORT").font = title_font
         waktu_str = datetime.now().strftime("%d %B %Y, %H:%M:%S")
-        ws.cell(row=3, column=2, value=f"Dibuat otomatis oleh ExcelCleaner Pro — {waktu_str}").font = subtitle_font
+        ws.cell(row=3, column=2, value=f"YANTTT — {waktu_str}").font = subtitle_font
 
         # 2. Ringkasan Metrik Kunci (Key Metrics)
-        ws.cell(row=5, column=2, value="METRIK UTAMA").font = section_font
+        ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
 
         metrics = [
-            ("File Sumber", report_dict.get("sumber", "Input File")),
-            ("Jumlah Baris Awal", report_dict.get("baris_awal", 0)),
-            ("Jumlah Baris Akhir", report_dict.get("baris_akhir", 0)),
-            ("Baris Duplikat Dihapus", report_dict.get("total_duplikat_dihapus", 0)),
-            ("Baris Di-drop (Missing)", report_dict.get("total_baris_didrop", 0)),
-            ("Jumlah Kolom", report_dict.get("kolom_akhir", 0)),
+            ("Source File", report_dict.get("sumber", "Input File")),
+            ("Initial Row Count", report_dict.get("baris_awal", 0)),
+            ("Final Row Count", report_dict.get("baris_akhir", 0)),
+            ("Duplicate Rows Removed", report_dict.get("total_duplikat_dihapus", 0)),
+            ("Dropped Rows (Missing)", report_dict.get("total_baris_didrop", 0)),
+            ("Total Columns", report_dict.get("kolom_akhir", 0)),
         ]
 
         for idx, (label, val) in enumerate(metrics, start=6):
@@ -85,11 +112,11 @@ class CleaningReporter:
                 c_val.alignment = Alignment(horizontal="right")
                 c_val.number_format = "#,##0"
 
-        # 3. Tabel Detail Perubahan per Kolom
+        # 3. Tabel Detail Perubahan per Kolom (Column Status Details)
         row_detail_start = 14
-        ws.cell(row=row_detail_start - 1, column=2, value="RINCIAN STATUS SETIAP KOLOM").font = section_font
+        ws.cell(row=row_detail_start - 1, column=2, value="COLUMN STATUS DETAILS").font = section_font
 
-        headers = ["No", "Nama Kolom", "Tipe Data Akhir", "Missing Ditemukan", "Aksi Pembersihan"]
+        headers = ["No", "Column Name", "Final Data Type", "Missing Found", "Cleaning Action"]
         for col_i, h_text in enumerate(headers, start=2):
             cell = ws.cell(row=row_detail_start, column=col_i, value=h_text)
             cell.font = header_font
@@ -110,7 +137,11 @@ class CleaningReporter:
 
             # Cari aksi yang relevan untuk kolom ini
             col_actions = [a for a in actions_list if f"'{col_name}'" in a]
-            action_desc = "; ".join(col_actions) if col_actions else "Data sudah bersih"
+            if col_actions:
+                translated_actions = [_translate_action(a) for a in col_actions]
+                action_desc = "; ".join(translated_actions)
+            else:
+                action_desc = "Data already clean"
 
             row_data = [
                 col_idx,

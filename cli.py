@@ -135,7 +135,7 @@ def main():
     parser.add_argument(
         "--no-summary",
         action="store_true",
-        help="Jangan buat sheet kedua 'Ringkasan Cleaning'",
+        help="Jangan buat sheet kedua 'Cleaning Summary'",
     )
     parser.add_argument(
         "-b", "--batch",

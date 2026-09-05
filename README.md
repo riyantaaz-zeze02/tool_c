@@ -38,7 +38,7 @@
 * **Baris Total Otomatis**: Menambahkan baris TOTAL di bagian bawah tabel dengan formula native `=SUM()`.
 
 ### 3. 📋 Lembar Laporan Audit Trail (Sheet Ringkasan)
-Menghasilkan sheet kedua bernama **`Ringkasan Cleaning`** pada file Excel output yang mencatat metrik transparansi:
+Menghasilkan sheet kedua bernama **`Cleaning Summary`** pada file Excel output yang mencatat metrik transparansi:
 * Total baris awal vs baris akhir.
 * Jumlah duplikat yang dihapus.
 * Rincian setiap aksi pembersihan yang dilakukan per kolom.
