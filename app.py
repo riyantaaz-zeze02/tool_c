@@ -12,6 +12,8 @@ import streamlit as st
 
 from cleaner.engine import CleaningEngine
 from cleaner.formatter.themes import THEMES, get_theme
+from cleaner.reader import read_csv_with_fallback
+
 
 # Konfigurasi Halaman
 st.set_page_config(
@@ -127,7 +129,7 @@ if uploaded_file is not None:
     file_label = uploaded_file.name
     try:
         if uploaded_file.name.endswith(".csv"):
-            df_raw = pd.read_csv(uploaded_file)
+            df_raw = read_csv_with_fallback(uploaded_file)
         else:
             df_raw = pd.read_excel(uploaded_file)
     except Exception as e:
@@ -136,8 +138,9 @@ if uploaded_file is not None:
 elif use_sample:
     sample_path = os.path.join("data", "input", "contoh_data.csv")
     if os.path.exists(sample_path):
-        df_raw = pd.read_csv(sample_path)
+        df_raw = read_csv_with_fallback(sample_path)
         file_label = "contoh_data.csv"
+
     else:
         st.warning("File contoh_data.csv tidak ditemukan di data/input/")
 

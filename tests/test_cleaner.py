@@ -150,3 +150,58 @@ def test_number_cleaner_currency_dataframe_with_footnotes():
     assert not cleaned["Gross"].isnull().any()
 
 
+def test_reader_encoding_fallback_windows_1252(tmp_path):
+    from cleaner.reader import baca_data, read_csv_with_fallback
+
+    # File CSV beraksen dengan encoding Windows-1252
+    csv_file = tmp_path / "accented_win1252.csv"
+    content = "nama,kota\nJosé,Müller\n"
+    csv_file.write_bytes(content.encode("windows-1252"))
+
+    # Test read_csv_with_fallback langsung dan via baca_data
+    df = read_csv_with_fallback(str(csv_file))
+    assert df["nama"].iloc[0] == "José"
+    assert df["kota"].iloc[0] == "Müller"
+
+    df_baca = baca_data(str(csv_file))
+    assert df_baca["nama"].iloc[0] == "José"
+    assert df_baca["kota"].iloc[0] == "Müller"
+
+
+def test_reader_encoding_utf8_normal(tmp_path):
+    from cleaner.reader import baca_data
+
+    # File CSV UTF-8 normal
+    csv_file = tmp_path / "normal_utf8.csv"
+    csv_file.write_text("nama,kota\nBudi,Jakarta\n", encoding="utf-8")
+
+    df = baca_data(str(csv_file))
+    assert df["nama"].iloc[0] == "Budi"
+    assert df["kota"].iloc[0] == "Jakarta"
+
+
+def test_reader_encoding_utf8_sig(tmp_path):
+    from cleaner.reader import baca_data
+
+    # File CSV UTF-8-SIG (dengan BOM dari Excel Windows)
+    csv_file = tmp_path / "excel_bom.csv"
+    csv_file.write_text("nama,kota\nSiti,Surabaya\n", encoding="utf-8-sig")
+
+    df = baca_data(str(csv_file))
+    assert "nama" in df.columns
+    assert df["nama"].iloc[0] == "Siti"
+
+
+def test_excel_export_row_limit_validation(tmp_path):
+    from cleaner.engine import CleaningEngine
+
+    engine = CleaningEngine()
+    # Buat DataFrame dummy yang melebihi batas 1.048.576 baris
+    dummy_df = pd.DataFrame(index=range(1_048_577), columns=["dummy"])
+    out_file = tmp_path / "overflow.xlsx"
+
+    with pytest.raises(ValueError, match=r"Data terlalu besar untuk satu sheet Excel \(maks 1\.048\.576 baris\)"):
+        engine.export_excel(dummy_df, str(out_file))
+
+
+

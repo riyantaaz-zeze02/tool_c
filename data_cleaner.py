@@ -15,6 +15,7 @@ import pandas as pd
 import sys
 import os
 from cleaner.rules.text_cleaner import smart_title_case, is_name_or_title_column
+from cleaner.reader import read_csv_with_fallback
 
 
 # ============================================================
@@ -40,8 +41,9 @@ def baca_data(file_path):
 
     # Baca sesuai format
     if ekstensi == ".csv":
-        df = pd.read_csv(file_path)
+        df = read_csv_with_fallback(file_path)
         print(f"📖 Berhasil membaca file CSV: {file_path}")
+
     elif ekstensi in [".xlsx", ".xls"]:
         df = pd.read_excel(file_path)
         print(f"📖 Berhasil membaca file Excel: {file_path}")

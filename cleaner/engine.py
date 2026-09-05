@@ -159,10 +159,15 @@ class CleaningEngine:
             add_total_row (bool): Apakah menyertakan baris Total dengan formula =SUM.
             include_summary_sheet (bool): Apakah menyertakan sheet kedua 'Cleaning Summary'.
         """
+        # Validasi batas baris maksimum Excel (.xlsx)
+        if len(df) > 1_048_576:
+            raise ValueError("Data terlalu besar untuk satu sheet Excel (maks 1.048.576 baris)")
+
         # Pastikan direktori output ada
         out_dir = os.path.dirname(output_path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
+
 
         wb = openpyxl.Workbook()
         ws = wb.active
