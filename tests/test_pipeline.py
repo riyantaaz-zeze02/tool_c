@@ -101,23 +101,28 @@ def test_join_three_files_is_chained_and_reports_match_rate(tmp_path):
     customers = tmp_path / "pelanggan.csv"
     transactions = tmp_path / "transaksi.csv"
     products = tmp_path / "produk.csv"
-    pd.DataFrame([[1, "Andi"], [2, "Budi"]], columns=["ID", "Nama"]).to_csv(customers, index=False)
-    pd.DataFrame([[1, "P01", 100], [2, "P99", 200]], columns=["ID", "ID_Produk", "Total"]).to_csv(transactions, index=False)
-    pd.DataFrame([["P01", "Laptop"]], columns=["ID_Produk", "Produk"]).to_csv(products, index=False)
+    pd.DataFrame([[1, "Andi"], [2, "Budi"], [3, "Cici"]], columns=["ID", "Nama"]).to_csv(customers, index=False)
+    pd.DataFrame([[1, "P01", 100], [2, "P99", 200], [4, "P01", 400]], columns=["ID", "ID_Produk", "Total"]).to_csv(transactions, index=False)
+    pd.DataFrame([["P01", "Laptop"], ["P03", "Mouse"]], columns=["ID_Produk", "Produk"]).to_csv(products, index=False)
 
     cleaned, report = CleaningEngine().clean_joined_files(
         [str(customers), str(transactions), str(products)],
         ["ID", "ID_Produk"],
     )
 
-    assert len(cleaned) == 2
+    assert len(cleaned) == 3
     assert cleaned["Produk"].iloc[0] == "Laptop"
     assert cleaned["Produk"].iloc[1] == "Unknown"
+    assert cleaned["Produk"].iloc[2] == "Unknown"
     assert len(report["join_stages"]) == 2
-    assert report["join_stages"][0]["match_rate"] == 100.0
+    assert report["join_stages"][0]["match_rate"] == 66.67
     assert report["join_stages"][1]["matched_rows"] == 1
-    assert report["join_stages"][1]["unmatched_rows"] == 1
-    assert report["join_stages"][1]["match_rate"] == 50.0
+    assert report["join_stages"][1]["unmatched_rows"] == 2
+    assert report["join_stages"][1]["match_rate"] == 33.33
+    assert report["total_orphan_rows"] == 2
+    assert set(report["orphan_rows"]["Tahap"]) == {1, 2}
+    assert "ID 4 tidak ditemukan di pelanggan.csv" in set(report["orphan_rows"]["Alasan"])
+    assert "ID_Produk P03 tidak ditemukan di hasil gabungan" in set(report["orphan_rows"]["Alasan"])
 
     output = tmp_path / "joined.xlsx"
     CleaningEngine().export_excel(cleaned, str(output), report=report)
@@ -127,8 +132,34 @@ def test_join_three_files_is_chained_and_reports_match_rate(tmp_path):
         for cell in row
     ]
     assert "JOIN STAGES" in summary_values
-    assert "50.00%" in summary_values
-    assert "hasil gabungan + produk.csv (key: ID_Produk) → 50.00% match" in summary_values
+    assert "33.33%" in summary_values
+    assert "2 baris tidak ikut ke hasil akhir — lihat sheet 'Baris Ter-drop' untuk detail" in summary_values
+    assert "Baris Ter-drop" in openpyxl.load_workbook(output).sheetnames
+    orphan_sheet = openpyxl.load_workbook(output)["Baris Ter-drop"]
+    orphan_values = [cell.value for row in orphan_sheet.iter_rows() for cell in row]
+    assert "ID 4 tidak ditemukan di pelanggan.csv" in orphan_values
+    assert "ID_Produk P03 tidak ditemukan di hasil gabungan" in orphan_values
+
+
+def test_join_single_stage_orphan_is_exported(tmp_path):
+    left = tmp_path / "pelanggan.csv"
+    right = tmp_path / "transaksi.csv"
+    pd.DataFrame([[1, "Andi"]], columns=["ID", "Nama"]).to_csv(left, index=False)
+    pd.DataFrame([[1, 100], [4, 400]], columns=["ID", "Total"]).to_csv(right, index=False)
+
+    engine = CleaningEngine()
+    cleaned, report = engine.clean_joined_files([str(left), str(right)], ["ID"])
+    output = tmp_path / "single_stage_join.xlsx"
+    engine.export_excel(cleaned, str(output), report=report)
+
+    orphan_sheet = openpyxl.load_workbook(output)["Baris Ter-drop"]
+    assert orphan_sheet["A1"].value == "ID"
+    assert orphan_sheet["C1"].value == "Tahap"
+    assert orphan_sheet["D1"].value == "File Asal"
+    assert orphan_sheet["E1"].value == "Alasan"
+    assert orphan_sheet["A2"].value == 4
+    assert orphan_sheet["C2"].value == 1
+    assert orphan_sheet["E2"].value == "ID 4 tidak ditemukan di pelanggan.csv"
 
 
 def test_join_rejects_wrong_key_count_before_join(tmp_path):

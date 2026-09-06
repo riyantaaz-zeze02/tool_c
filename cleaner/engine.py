@@ -365,10 +365,25 @@ class CleaningEngine:
 
         joined = raw_files[0][1]
         join_stages = []
+        orphan_rows = []
         for stage_index, key in enumerate(keys):
             right_name, right_df = raw_files[stage_index + 1]
             left_name = "hasil gabungan" if stage_index else raw_files[0][0]
+            left_keys = joined[key].dropna().unique()
             right_keys = right_df[key].dropna().unique()
+            orphan_mask = ~right_df[key].isin(left_keys)
+            for _, orphan_row in right_df.loc[orphan_mask].iterrows():
+                orphan_data = orphan_row.to_dict()
+                orphan_value = orphan_row[key]
+                if pd.isna(orphan_value):
+                    orphan_value = "<kosong>"
+                orphan_data.update({
+                    "Tahap": stage_index + 1,
+                    "File Asal": right_name,
+                    "Alasan": f"{key} {orphan_value} tidak ditemukan di {left_name}",
+                })
+                orphan_rows.append(orphan_data)
+
             matched_mask = joined[key].isin(right_keys)
             matched_rows = int(matched_mask.sum())
             left_rows = len(joined)
@@ -393,6 +408,8 @@ class CleaningEngine:
             "total_files": len(file_paths),
             "join_keys": keys,
             "join_stages": join_stages,
+            "orphan_rows": pd.DataFrame(orphan_rows),
+            "total_orphan_rows": len(orphan_rows),
             "baris_awal": initial_rows,
             "kolom_awal": len(joined.columns),
         })
@@ -449,6 +466,15 @@ class CleaningEngine:
         for s_n, s_df in sheet_dfs.items():
             if len(s_df) > 1_048_576:
                 raise ValueError("Data terlalu besar untuk satu sheet Excel (maks 1.048.576 baris)")
+
+        active_report_for_extras = report if isinstance(report, dict) else self.last_report
+        orphan_df = None
+        if isinstance(active_report_for_extras, dict) and active_report_for_extras.get("is_join"):
+            orphan_df = active_report_for_extras.get("orphan_rows")
+            if orphan_df is None or orphan_df.empty:
+                orphan_df = pd.DataFrame(columns=["Tahap", "File Asal", "Alasan"])
+            if len(orphan_df) > 1_048_576:
+                raise ValueError("Data orphan terlalu besar untuk satu sheet Excel (maks 1.048.576 baris)")
 
         # Pastikan direktori output ada
         out_dir = os.path.dirname(output_path)
@@ -527,6 +553,19 @@ class CleaningEngine:
                     reporter.add_summary_sheet(wb, combined_data)
                 else:
                     reporter.add_summary_sheet(wb, active_reports, df)
+
+        if orphan_df is not None:
+            if "Baris Ter-drop" in wb.sheetnames:
+                del wb["Baris Ter-drop"]
+            ws_orphan = wb.create_sheet(title="Baris Ter-drop")
+            ws_orphan.views.sheetView[0].showGridLines = True
+            for col_idx, col_name in enumerate(orphan_df.columns, start=1):
+                ws_orphan.cell(row=1, column=col_idx, value=col_name)
+            for row_idx, row_values in enumerate(orphan_df.itertuples(index=False), start=2):
+                for col_idx, value in enumerate(row_values, start=1):
+                    cell = ws_orphan.cell(row=row_idx, column=col_idx)
+                    cell.value = None if pd.isna(value) else value
+            styler.style_worksheet(ws_orphan, orphan_df, add_total_row=False)
 
         wb.save(output_path)
         print(f"💾 File Excel profesional berhasil disimpan ke: {output_path}")

@@ -168,11 +168,19 @@ class CleaningReporter:
                 flow_text = f"{stage['left']} + {stage['right']} (key: {stage['key']}) → {stage['match_rate']:.2f}% match"
                 ws.cell(row=flow_index, column=2, value=flow_text).font = value_font
 
+            orphan_count = report_dict.get("total_orphan_rows", 0)
+            orphan_note_row = row_flow + len(report_dict.get("join_stages", [])) + 1
+            ws.cell(
+                row=orphan_note_row,
+                column=2,
+                value=f"{orphan_count} baris tidak ikut ke hasil akhir — lihat sheet 'Baris Ter-drop' untuk detail",
+            ).font = label_font
+
             for col_i in range(2, 9):
                 col_letter = get_column_letter(col_i)
                 max_len = max(
                     len(str(ws.cell(row=row, column=col_i).value or ""))
-                    for row in range(2, row_flow + 1)
+                    for row in range(2, orphan_note_row + 1)
                 )
                 ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
 
