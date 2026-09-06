@@ -143,6 +143,12 @@ Gunakan perintah terminal yang fleksibel:
   ```
   Mode merge hanya menerima file dengan urutan nama kolom yang sama persis. Setiap baris diberi kolom `Sumber File`, lalu seluruh data dibersihkan sebagai satu pipeline sehingga duplikat antar-file ikut terdeteksi. Excel output menyertakan sheet `Cleaning Summary` dengan jumlah baris awal per file dan rincian duplikat internal maupun antar-file. Mode `--merge` dan `--merge-folder` terpisah dari `--batch`.
 
+* **Mode Join Berantai (Menggabungkan File Berdasarkan Key):**
+  ```bash
+  python cli.py --join "pelanggan.xlsx,transaksi.xlsx,produk.xlsx" --keys "ID,ID_Produk"
+  ```
+  Join dilakukan berurutan sebagai `left join`: file pertama digabung dengan file kedua memakai key pertama, lalu hasilnya digabung dengan file berikutnya memakai key berikutnya. Jumlah key wajib selalu satu lebih sedikit dari jumlah file. `Cleaning Summary` mencatat baris matched, unmatched, dan match rate untuk setiap tahap.
+
 * **Ekspor sebagai File CSV Saja:**
   ```bash
   python cli.py data/input/contoh_data.csv --format csv

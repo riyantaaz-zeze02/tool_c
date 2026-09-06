@@ -213,6 +213,59 @@ def process_merged_files(file_paths, args, engine, config):
     return True
 
 
+def process_joined_files(file_paths, keys, args, engine, config):
+    """Menjalankan chained join, cleaning, dan ekspor satu hasil akhir."""
+    print("=" * 60)
+    print(f"🚀 Menjalankan chained join untuk {len(file_paths)} file")
+    print("=" * 60)
+
+    base_name = os.path.splitext(os.path.basename(file_paths[0]))[0]
+    out_format = args.format.lower()
+    extension = ".xlsx" if out_format == "excel" else ".csv"
+    if args.output:
+        out_file = os.path.join(args.output, f"{base_name}_joined_bersih{extension}") if os.path.isdir(args.output) else args.output
+    else:
+        out_file = os.path.join("data", "output", f"{base_name}_joined_bersih{extension}")
+
+    formatting_cfg = config.get("formatting", {})
+    theme = args.theme or formatting_cfg.get("theme", "corporate_blue")
+    currency = args.currency or formatting_cfg.get("currency", "IDR")
+    sheet_name = formatting_cfg.get("sheet_name", "Data Bersih")
+    add_total = not args.no_total if args.no_total is not None else formatting_cfg.get("add_total_row", True)
+    include_summary = not args.no_summary if args.no_summary is not None else formatting_cfg.get("include_summary_sheet", True)
+
+    try:
+        df, report = engine.clean_joined_files(file_paths, keys)
+    except Exception as e:
+        print(f"❌ Gagal menjalankan join: {e}")
+        return False
+
+    if out_format == "excel":
+        engine.export_excel(
+            df,
+            out_file,
+            report=report,
+            theme=theme,
+            currency=currency,
+            sheet_name=sheet_name,
+            add_total_row=add_total,
+            include_summary_sheet=include_summary,
+        )
+    else:
+        output_dir = os.path.dirname(out_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        df.to_csv(out_file, index=False)
+        print(f"💾 File CSV hasil join berhasil disimpan ke: {out_file}")
+
+    print("\n📊 Match rate per tahap:")
+    for stage in report["join_stages"]:
+        print(f"   - {stage['left']} + {stage['right']} (key: {stage['key']}) → {stage['match_rate']}% match")
+    print("=" * 60)
+    print()
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="ExcelCleaner Pro — Tool Pembersih Data & Formatter Excel Profesional"
@@ -284,6 +337,16 @@ def main():
         help="Gabungkan semua file CSV/Excel dalam folder menjadi satu input",
         default=None,
     )
+    parser.add_argument(
+        "--join",
+        help="Join berantai daftar file CSV/Excel yang dipisahkan koma",
+        default=None,
+    )
+    parser.add_argument(
+        "--keys",
+        help="Daftar key join berurutan, dipisahkan koma (N file membutuhkan N-1 key)",
+        default=None,
+    )
 
 
     args = parser.parse_args()
@@ -295,15 +358,41 @@ def main():
 
     if args.merge and args.merge_folder:
         parser.error("Gunakan salah satu --merge atau --merge-folder, bukan keduanya.")
-    if args.batch and (args.merge or args.merge_folder):
-        parser.error("Mode --batch tidak dapat digabung dengan --merge atau --merge-folder.")
-    if not args.input and not (args.merge or args.merge_folder):
-        parser.error("Input file wajib diisi, kecuali menggunakan --merge atau --merge-folder.")
+    active_modes = [bool(args.batch), bool(args.merge or args.merge_folder), bool(args.join)]
+    if sum(active_modes) > 1:
+        parser.error("Gunakan hanya satu mode: input tunggal, --batch, --merge, atau --join.")
+    if args.join and not args.keys:
+        parser.error("Mode --join membutuhkan --keys.")
+    if not args.input and not (args.merge or args.merge_folder or args.join):
+        parser.error("Input file wajib diisi, kecuali menggunakan --merge, --merge-folder, atau --join.")
 
     config = load_yaml_config(args.config)
     engine = CleaningEngine(config=config)
 
-    if args.merge or args.merge_folder:
+    if args.join:
+        files = [path.strip() for path in args.join.split(",") if path.strip()]
+        keys = [key.strip() for key in args.keys.split(",") if key.strip()]
+        valid_exts = [".csv", ".xlsx", ".xls"]
+        if len(files) < 2:
+            parser.error("Mode --join membutuhkan minimal 2 file.")
+        if len(keys) != len(files) - 1:
+            parser.error(
+                f"Jumlah key tidak sesuai: {len(files)} file membutuhkan {len(files) - 1} key, tetapi menerima {len(keys)}."
+            )
+        invalid_files = [path for path in files if not os.path.isfile(path)]
+        unsupported_files = [path for path in files if os.path.splitext(path)[1].lower() not in valid_exts]
+        if invalid_files:
+            parser.error(f"File tidak ditemukan: {', '.join(invalid_files)}")
+        if unsupported_files:
+            parser.error(f"Format file tidak didukung: {', '.join(unsupported_files)}")
+        print("📂 File yang akan di-join:")
+        for file_path in files:
+            print(f"   • {file_path}")
+        print(f"🔑 Key berurutan: {', '.join(keys)}\n")
+        if not process_joined_files(files, keys, args, engine, config):
+            sys.exit(1)
+
+    elif args.merge or args.merge_folder:
         valid_exts = [".csv", ".xlsx", ".xls"]
         if args.merge:
             files = [path.strip() for path in args.merge.split(",") if path.strip()]

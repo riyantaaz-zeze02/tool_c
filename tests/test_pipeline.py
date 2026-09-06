@@ -97,6 +97,63 @@ def test_merge_summary_contains_per_file_breakdown(tmp_path):
     assert "  • Duplikat Antar-File (Cross-File)" in values
 
 
+def test_join_three_files_is_chained_and_reports_match_rate(tmp_path):
+    customers = tmp_path / "pelanggan.csv"
+    transactions = tmp_path / "transaksi.csv"
+    products = tmp_path / "produk.csv"
+    pd.DataFrame([[1, "Andi"], [2, "Budi"]], columns=["ID", "Nama"]).to_csv(customers, index=False)
+    pd.DataFrame([[1, "P01", 100], [2, "P99", 200]], columns=["ID", "ID_Produk", "Total"]).to_csv(transactions, index=False)
+    pd.DataFrame([["P01", "Laptop"]], columns=["ID_Produk", "Produk"]).to_csv(products, index=False)
+
+    cleaned, report = CleaningEngine().clean_joined_files(
+        [str(customers), str(transactions), str(products)],
+        ["ID", "ID_Produk"],
+    )
+
+    assert len(cleaned) == 2
+    assert cleaned["Produk"].iloc[0] == "Laptop"
+    assert cleaned["Produk"].iloc[1] == "Unknown"
+    assert len(report["join_stages"]) == 2
+    assert report["join_stages"][0]["match_rate"] == 100.0
+    assert report["join_stages"][1]["matched_rows"] == 1
+    assert report["join_stages"][1]["unmatched_rows"] == 1
+    assert report["join_stages"][1]["match_rate"] == 50.0
+
+    output = tmp_path / "joined.xlsx"
+    CleaningEngine().export_excel(cleaned, str(output), report=report)
+    summary_values = [
+        cell.value
+        for row in openpyxl.load_workbook(output)["Cleaning Summary"].iter_rows()
+        for cell in row
+    ]
+    assert "JOIN STAGES" in summary_values
+    assert "50.00%" in summary_values
+    assert "hasil gabungan + produk.csv (key: ID_Produk) → 50.00% match" in summary_values
+
+
+def test_join_rejects_wrong_key_count_before_join(tmp_path):
+    files = []
+    for index in range(3):
+        path = tmp_path / f"file{index}.csv"
+        pd.DataFrame([[index]], columns=["ID"]).to_csv(path, index=False)
+        files.append(str(path))
+
+    with pytest.raises(ValueError, match=r"3 file membutuhkan 2 key"):
+        CleaningEngine().clean_joined_files(files, ["ID"])
+
+
+def test_join_rejects_key_missing_in_specific_file(tmp_path):
+    first = tmp_path / "pelanggan.csv"
+    second = tmp_path / "transaksi.csv"
+    third = tmp_path / "produk.csv"
+    pd.DataFrame([[1]], columns=["ID"]).to_csv(first, index=False)
+    pd.DataFrame([[1, "P01"]], columns=["ID", "ID_Produk"]).to_csv(second, index=False)
+    pd.DataFrame([["P01"]], columns=["KodeProduk"]).to_csv(third, index=False)
+
+    with pytest.raises(ValueError, match=r"Key 'ID_Produk'.*produk\.csv"):
+        CleaningEngine().clean_joined_files([str(first), str(second), str(third)], ["ID", "ID_Produk"])
+
+
 def _create_dummy_3sheet_excel(file_path):
     """Helper untuk membuat file Excel 3 sheet untuk testing."""
     wb = openpyxl.Workbook()

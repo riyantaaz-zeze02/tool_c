@@ -322,6 +322,83 @@ class CleaningEngine:
         self.last_report = report
         return df_merged, report
 
+    def clean_joined_files(self, file_paths, keys, sheet_name=0, how="left"):
+        """Melakukan chained join pada beberapa file lalu membersihkan hasil akhirnya."""
+        if not file_paths or len(file_paths) < 2:
+            raise ValueError("Perlu minimal 2 file untuk operasi join.")
+        if isinstance(keys, str):
+            keys = [key.strip() for key in keys.split(",") if key.strip()]
+        else:
+            keys = [str(key).strip() for key in keys if str(key).strip()]
+        if len(keys) != len(file_paths) - 1:
+            raise ValueError(
+                f"Jumlah key tidak sesuai: {len(file_paths)} file membutuhkan "
+                f"{len(file_paths) - 1} key, tetapi menerima {len(keys)}."
+            )
+        if how != "left":
+            raise ValueError("Chained join hanya mendukung tipe join 'left'.")
+
+        raw_files = []
+        for file_path in file_paths:
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File '{file_path}' tidak ditemukan!")
+            raw_files.append((os.path.basename(file_path), baca_data(file_path, sheet_name=sheet_name).copy()))
+
+        # Validasi seluruh rantai sebelum satu pun join dijalankan.
+        result_columns = list(raw_files[0][1].columns)
+        for stage_index, key in enumerate(keys):
+            left_name = "hasil gabungan" if stage_index else raw_files[0][0]
+            right_name, right_df = raw_files[stage_index + 1]
+            if key not in result_columns:
+                raise ValueError(
+                    f"Key '{key}' untuk tahap {stage_index + 1} tidak ditemukan "
+                    f"di {left_name}. Kolom tersedia: {result_columns}"
+                )
+            if key not in right_df.columns:
+                raise ValueError(
+                    f"Key '{key}' untuk tahap {stage_index + 1} tidak ditemukan "
+                    f"di file '{right_name}'. Kolom tersedia: {list(right_df.columns)}"
+                )
+            left_empty = pd.DataFrame(columns=result_columns)
+            right_empty = pd.DataFrame(columns=list(right_df.columns))
+            result_columns = list(left_empty.merge(right_empty, how=how, on=key).columns)
+
+        joined = raw_files[0][1]
+        join_stages = []
+        for stage_index, key in enumerate(keys):
+            right_name, right_df = raw_files[stage_index + 1]
+            left_name = "hasil gabungan" if stage_index else raw_files[0][0]
+            right_keys = right_df[key].dropna().unique()
+            matched_mask = joined[key].isin(right_keys)
+            matched_rows = int(matched_mask.sum())
+            left_rows = len(joined)
+            stage = {
+                "tahap": stage_index + 1,
+                "left": left_name,
+                "right": right_name,
+                "key": key,
+                "left_rows": left_rows,
+                "matched_rows": matched_rows,
+                "unmatched_rows": left_rows - matched_rows,
+                "match_rate": round((matched_rows / left_rows * 100) if left_rows else 0, 2),
+            }
+            join_stages.append(stage)
+            joined = joined.merge(right_df, how=how, on=key, suffixes=("", f"_{os.path.splitext(right_name)[0]}"))
+
+        initial_rows = len(joined)
+        cleaned, report = self.clean(joined)
+        report.update({
+            "sumber": f"Joined ({len(file_paths)} files)",
+            "is_join": True,
+            "total_files": len(file_paths),
+            "join_keys": keys,
+            "join_stages": join_stages,
+            "baris_awal": initial_rows,
+            "kolom_awal": len(joined.columns),
+        })
+        self.last_report = report
+        return cleaned, report
+
     def export_excel(
 
         self,

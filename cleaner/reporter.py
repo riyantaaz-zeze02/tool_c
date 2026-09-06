@@ -109,9 +109,74 @@ class CleaningReporter:
                 elif isinstance(item, tuple) and len(item) == 2:
                     sheet_reports.append((item[0], item[1], None))
 
+        is_join = isinstance(report_dict, dict) and report_dict.get("is_join", False)
         is_merge = isinstance(report_dict, dict) and report_dict.get("is_merge", False)
 
-        if is_merge:
+        if is_join:
+            ws.cell(row=5, column=2, value="JOIN FLOW").font = section_font
+            metrics = [
+                ("Mode Operasi", "Chained Left Join & Cleaning"),
+                ("Total File Di-join", report_dict.get("total_files", 0)),
+                ("Total Baris Awal", report_dict.get("baris_awal", 0)),
+                ("Total Baris Akhir", report_dict.get("baris_akhir", 0)),
+                ("Total Duplikat Dihapus", report_dict.get("total_duplikat_dihapus", 0)),
+            ]
+            for idx, (label, val) in enumerate(metrics, start=6):
+                c_label = ws.cell(row=idx, column=2, value=label)
+                c_label.font = label_font
+                c_label.border = thin_border
+                c_label.fill = zebra_fill
+                c_val = ws.cell(row=idx, column=3, value=val)
+                c_val.font = value_font
+                c_val.border = thin_border
+                if isinstance(val, (int, float)):
+                    c_val.alignment = Alignment(horizontal="right")
+                    c_val.number_format = "#,##0"
+
+            row_stage_start = 13
+            ws.cell(row=row_stage_start - 1, column=2, value="JOIN STAGES").font = section_font
+            stage_headers = ["Stage", "Left Side", "Right File", "Key", "Matched Rows", "Unmatched Rows", "Match Rate"]
+            for col_i, header in enumerate(stage_headers, start=2):
+                cell = ws.cell(row=row_stage_start, column=col_i, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            for stage_index, stage in enumerate(report_dict.get("join_stages", []), start=1):
+                row = row_stage_start + stage_index
+                row_values = [
+                    stage_index,
+                    stage["left"],
+                    stage["right"],
+                    stage["key"],
+                    stage["matched_rows"],
+                    stage["unmatched_rows"],
+                    f"{stage['match_rate']:.2f}%",
+                ]
+                for col_i, value in enumerate(row_values, start=2):
+                    cell = ws.cell(row=row, column=col_i, value=value)
+                    cell.font = value_font
+                    cell.fill = zebra_fill if stage_index % 2 else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+                    cell.border = thin_border
+                    if col_i in (2, 6, 7):
+                        cell.alignment = Alignment(horizontal="right")
+
+            row_flow = row_stage_start + len(report_dict.get("join_stages", [])) + 3
+            ws.cell(row=row_flow - 1, column=2, value="JOIN FLOW SUMMARY").font = section_font
+            for flow_index, stage in enumerate(report_dict.get("join_stages", []), start=row_flow):
+                flow_text = f"{stage['left']} + {stage['right']} (key: {stage['key']}) → {stage['match_rate']:.2f}% match"
+                ws.cell(row=flow_index, column=2, value=flow_text).font = value_font
+
+            for col_i in range(2, 9):
+                col_letter = get_column_letter(col_i)
+                max_len = max(
+                    len(str(ws.cell(row=row, column=col_i).value or ""))
+                    for row in range(2, row_flow + 1)
+                )
+                ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+        elif is_merge:
             # Layout khusus untuk laporan hasil penggabungan (Merge) (Requirement 6)
             ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
 
