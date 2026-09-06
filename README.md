@@ -134,6 +134,14 @@ Gunakan perintah terminal yang fleksibel:
   ```bash
   python cli.py data/input/ --batch -t modern_slate
   ```
+  Setiap file diproses dan diekspor sebagai hasil terpisah.
+
+* **Mode Merge (Menggabungkan Beberapa File Menjadi Satu):**
+  ```bash
+  python cli.py --merge "data/input/jan.csv,data/input/feb.csv,data/input/mar.csv"
+  python cli.py --merge-folder data/input/ --format csv
+  ```
+  Mode merge hanya menerima file dengan urutan nama kolom yang sama persis. Setiap baris diberi kolom `Sumber File`, lalu seluruh data dibersihkan sebagai satu pipeline sehingga duplikat antar-file ikut terdeteksi. Excel output menyertakan sheet `Cleaning Summary` dengan jumlah baris awal per file dan rincian duplikat internal maupun antar-file. Mode `--merge` dan `--merge-folder` terpisah dari `--batch`.
 
 * **Ekspor sebagai File CSV Saja:**
   ```bash

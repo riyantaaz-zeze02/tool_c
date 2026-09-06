@@ -109,13 +109,140 @@ class CleaningReporter:
                 elif isinstance(item, tuple) and len(item) == 2:
                     sheet_reports.append((item[0], item[1], None))
 
+        is_merge = isinstance(report_dict, dict) and report_dict.get("is_merge", False)
+
+        if is_merge:
+            # Layout khusus untuk laporan hasil penggabungan (Merge) (Requirement 6)
+            ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
+
+            metrics = [
+                ("Mode Operasi", "File Merge & Cleaning"),
+                ("Total File Digabung", report_dict.get("total_files", 0)),
+                ("Total Baris Awal", report_dict.get("baris_awal", 0)),
+                ("Total Baris Akhir", report_dict.get("baris_akhir", 0)),
+                ("Total Duplikat Dihapus", report_dict.get("total_duplikat_dihapus", 0)),
+                ("  • Duplikat Internal (Satu File)", report_dict.get("duplikat_internal", 0)),
+                ("  • Duplikat Antar-File (Cross-File)", report_dict.get("duplikat_antar_file", 0)),
+                ("Baris Di-drop (Missing)", report_dict.get("total_baris_didrop", 0)),
+                ("Total Kolom", report_dict.get("kolom_akhir", 0)),
+            ]
+
+            for idx, (label, val) in enumerate(metrics, start=6):
+                c_label = ws.cell(row=idx, column=2, value=label)
+                c_label.font = label_font
+                c_label.border = thin_border
+                c_label.fill = zebra_fill
+
+                c_val = ws.cell(row=idx, column=3, value=val)
+                c_val.font = value_font
+                c_val.border = thin_border
+                if isinstance(val, (int, float)):
+                    c_val.alignment = Alignment(horizontal="right")
+                    c_val.number_format = "#,##0"
+
+            # Tabel Rincian File Sumber (Requirement 6)
+            row_file_start = 6 + len(metrics) + 2
+            ws.cell(row=row_file_start - 1, column=2, value="SOURCE FILES BREAKDOWN").font = section_font
+
+            file_headers = ["No", "Source File Name", "Initial Rows", "Intra-file Duplicates"]
+            for col_i, h_text in enumerate(file_headers, start=2):
+                cell = ws.cell(row=row_file_start, column=col_i, value=h_text)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            file_details = report_dict.get("file_details", [])
+            for f_idx, f_info in enumerate(file_details, start=1):
+                r = row_file_start + f_idx
+                is_z = (f_idx % 2 == 1)
+                r_fill = zebra_fill if is_z else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+                f_row_data = [
+                    f_idx,
+                    f_info.get("file", ""),
+                    f_info.get("baris_awal", 0),
+                    f_info.get("duplikat_internal", 0),
+                ]
+                for c_i, val in enumerate(f_row_data, start=2):
+                    cell = ws.cell(row=r, column=c_i, value=val)
+                    cell.font = value_font
+                    cell.fill = r_fill
+                    cell.border = thin_border
+                    if c_i == 2:
+                        cell.alignment = Alignment(horizontal="center")
+                    elif c_i >= 4:
+                        cell.alignment = Alignment(horizontal="right")
+                        cell.number_format = "#,##0"
+
+            # Tabel Detail Status Kolom
+            row_detail_start = row_file_start + len(file_details) + 2
+            ws.cell(row=row_detail_start - 1, column=2, value="COLUMN STATUS DETAILS").font = section_font
+
+            col_headers = ["No", "Column Name", "Final Data Type", "Missing Found", "Cleaning Action"]
+            for col_i, h_text in enumerate(col_headers, start=2):
+                cell = ws.cell(row=row_detail_start, column=col_i, value=h_text)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            if df_cleaned is not None:
+                missing_log = report_dict.get("langkah", {}).get("missing", {}).get("missing_sebelum", {})
+                actions_list = []
+                for step in ["number", "date", "missing", "text"]:
+                    step_actions = report_dict.get("langkah", {}).get(step, {}).get("aksi", [])
+                    actions_list.extend(step_actions)
+
+                for col_idx, col_name in enumerate(df_cleaned.columns, start=1):
+                    r = row_detail_start + col_idx
+                    is_z = (col_idx % 2 == 1)
+                    r_fill = zebra_fill if is_z else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+
+                    col_actions = [a for a in actions_list if f"'{col_name}'" in a]
+                    if col_actions:
+                        translated_actions = [_translate_action(a) for a in col_actions]
+                        action_desc = "; ".join(translated_actions)
+                    else:
+                        action_desc = "Data already clean"
+
+                    col_row_data = [
+                        col_idx,
+                        col_name,
+                        str(df_cleaned[col_name].dtype),
+                        missing_log.get(col_name, 0),
+                        action_desc,
+                    ]
+                    for c_i, val in enumerate(col_row_data, start=2):
+                        cell = ws.cell(row=r, column=c_i, value=val)
+                        cell.font = value_font
+                        cell.fill = r_fill
+                        cell.border = thin_border
+                        if c_i == 2:
+                            cell.alignment = Alignment(horizontal="center")
+                        elif c_i == 5:
+                            cell.alignment = Alignment(horizontal="right")
+                            cell.number_format = "#,##0"
+
+            # Auto-width kolom
+            total_rows_to_check = row_detail_start + (len(df_cleaned.columns) if df_cleaned is not None else 6) + 2
+            for c in range(2, 7):
+                c_letter = get_column_letter(c)
+                max_len = 0
+                for r in range(2, total_rows_to_check):
+                    v = ws.cell(row=r, column=c).value
+                    if v is not None:
+                        max_len = max(max_len, len(str(v)))
+                ws.column_dimensions[c_letter].width = max(max_len + 4, 15)
+
         # Jika hanya 1 sheet: gunakan format klasik yang kompatibel penuh dengan test yang ada
-        if len(sheet_reports) <= 1:
+        elif len(sheet_reports) <= 1:
             single_rep = sheet_reports[0][1] if sheet_reports else (report_dict if isinstance(report_dict, dict) else {})
             single_df = sheet_reports[0][2] if sheet_reports else df_cleaned
 
             # 2. Ringkasan Metrik Kunci (Key Metrics)
             ws.cell(row=5, column=2, value="KEY METRICS").font = section_font
+
 
             metrics = [
                 ("Source File", single_rep.get("sumber", "Input File")),

@@ -189,7 +189,141 @@ class CleaningEngine:
             s_name = os.path.splitext(os.path.basename(file_path))[0]
             return {s_name: {"df": df_clean, "report": rep}}
 
+    def clean_merged_files(self, file_paths, source_col="Sumber File", sheet_name=0):
+        """
+        Menggabungkan beberapa file dengan struktur kolom yang sama,
+        menambahkan kolom asal file, dan membersihkan seluruh dataset secara terpadu.
+
+        Parameter:
+            file_paths (list[str]): Daftar path file yang akan digabungkan.
+            source_col (str): Nama kolom untuk mencatat file sumber asal (default: 'Sumber File').
+            sheet_name (str|int): Sheet yang dibaca jika file berupa Excel.
+
+        Return:
+            tuple: (pd.DataFrame bersih hasil gabungan, dict laporan_audit)
+        """
+        if not file_paths or len(file_paths) < 2:
+            raise ValueError("Perlu minimal 2 file untuk operasi penggabungan (merge).")
+
+        # 1. Baca semua file dan catat metrik awal
+        raw_files = []
+        for f in file_paths:
+            if not os.path.exists(f):
+                raise FileNotFoundError(f"File '{f}' tidak ditemukan!")
+            df = baca_data(f, sheet_name=sheet_name)
+            fname = os.path.basename(f)
+            raw_files.append((f, fname, df.copy()))
+
+        # 2. Validasi struktur kolom persis sama (Requirement 2)
+        file_list = [fname for _, fname, _ in raw_files]
+        base_file = file_list[0]
+        base_cols = list(raw_files[0][2].columns)
+
+        for _, curr_file, curr_df in raw_files[1:]:
+            curr_cols = list(curr_df.columns)
+            if curr_cols != base_cols:
+                missing_in_curr = [c for c in base_cols if c not in curr_cols]
+                extra_in_curr = [c for c in curr_cols if c not in base_cols]
+                err_lines = [
+                    f"Struktur kolom tidak sama! File '{curr_file}' berbeda dengan file acuan '{base_file}'.",
+                    f"   • Kolom acuan ({base_file}): {base_cols}",
+                    f"   • Kolom ditemukan ({curr_file}): {curr_cols}",
+                ]
+                if missing_in_curr:
+                    err_lines.append(f"   • Kolom hilang di '{curr_file}': {missing_in_curr}")
+                if extra_in_curr:
+                    err_lines.append(f"   • Kolom tambahan di '{curr_file}': {extra_in_curr}")
+                raise ValueError("\n".join(err_lines))
+
+        # 3. Tandai asal file di setiap baris (Requirement 3) & tumpuk dengan pd.concat (Requirement 4)
+        tagged_dfs = []
+        for _, fname, df in raw_files:
+            df_tagged = df.copy()
+            df_tagged[source_col] = fname
+            tagged_dfs.append(df_tagged)
+
+        df_merged = pd.concat(tagged_dfs, ignore_index=True)
+        total_initial_rows = len(df_merged)
+
+        # 4. Deteksi duplikat intra-file vs antar-file sebelum deduplikasi (Requirement 5 & 6)
+        feat_cols = [c for c in df_merged.columns if c != source_col]
+        first_seen_file = {}
+        intra_dups_per_file = {fname: 0 for fname in file_list}
+        intra_dups_total = 0
+        cross_dups_total = 0
+
+        for _, row in df_merged.iterrows():
+            row_key = tuple(row[feat_cols].astype(str))
+            file_src = row[source_col]
+            if row_key not in first_seen_file:
+                first_seen_file[row_key] = file_src
+            else:
+                if first_seen_file[row_key] == file_src:
+                    intra_dups_per_file[file_src] += 1
+                    intra_dups_total += 1
+                else:
+                    cross_dups_total += 1
+
+        # 5. Jalankan cleaning pipeline pada hasil gabungan (Requirement 5)
+        dup_config = self.config.get("duplicate", {}).copy()
+        if dup_config.get("subset") is None:
+            dup_config["subset"] = feat_cols
+
+        text_config = self.config.get("text", {}).copy()
+        excludes = text_config.get("kolom_exclude", [])
+        if source_col not in excludes:
+            text_config["kolom_exclude"] = list(excludes) + [source_col]
+
+        report = {
+            "sumber": f"Merged ({len(file_paths)} files)",
+            "is_merge": True,
+            "source_col": source_col,
+            "total_files": len(file_paths),
+            "file_details": [
+                {
+                    "file": fname,
+                    "baris_awal": next(len(df) for _, current_name, df in raw_files if current_name == fname),
+                    "duplikat_internal": intra_dups_per_file[fname],
+                }
+                for fname in file_list
+            ],
+            "baris_awal": total_initial_rows,
+            "duplikat_internal": intra_dups_total,
+            "duplikat_antar_file": cross_dups_total,
+            "kolom_awal": len(df_merged.columns),
+            "langkah": {},
+        }
+
+        # Step 1: Angka & Currency
+        df_merged, log_number = bersihkan_angka(df_merged, config=self.config.get("number", {}))
+        report["langkah"]["number"] = log_number
+
+        # Step 2: Tanggal
+        df_merged, log_date = bersihkan_tanggal(df_merged, config=self.config.get("date", {}))
+        report["langkah"]["date"] = log_date
+
+        # Step 3: Missing Value
+        df_merged, log_missing = tangani_missing(df_merged, config=self.config.get("missing", {}))
+        report["langkah"]["missing"] = log_missing
+
+        # Step 4: Deduplikasi
+        df_merged, log_duplicate = hapus_duplikat(df_merged, config=dup_config)
+        report["langkah"]["duplicate"] = log_duplicate
+
+        # Step 5: Standarisasi Teks
+        df_merged, log_text = bersihkan_teks(df_merged, config=text_config)
+        report["langkah"]["text"] = log_text
+
+        report["baris_akhir"] = len(df_merged)
+        report["kolom_akhir"] = len(df_merged.columns)
+        report["total_duplikat_dihapus"] = log_duplicate.get("jumlah_duplikat", 0)
+        report["total_baris_didrop"] = log_missing.get("baris_didrop", 0)
+
+        self.last_report = report
+        return df_merged, report
+
     def export_excel(
+
         self,
         df,
         output_path,

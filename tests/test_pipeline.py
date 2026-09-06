@@ -5,6 +5,7 @@ test_pipeline.py — Integration Tests untuk Pipeline Cleaning & Export Excel
 import os
 import openpyxl
 import pandas as pd
+import pytest
 from cleaner.engine import CleaningEngine
 
 
@@ -40,6 +41,60 @@ def test_full_pipeline_on_sample_csv(tmp_path):
     assert "YANTTT" in str(ws_summary["B3"].value)
     assert ws_summary["B5"].value == "KEY METRICS"
     assert ws_summary["B13"].value == "COLUMN STATUS DETAILS"
+
+
+def test_merge_three_files_detects_cross_file_duplicates_and_sources(tmp_path):
+    columns = ["id", "nama", "nilai"]
+    rows = [
+        [[1, "andi", 100], [2, "budi", 200]],
+        [[2, "budi", 200], [3, "cici", 300]],
+        [[4, "dedi", 400]],
+    ]
+    files = []
+    for month, month_rows in zip(("jan", "feb", "mar"), rows):
+        path = tmp_path / f"{month}.csv"
+        pd.DataFrame(month_rows, columns=columns).to_csv(path, index=False)
+        files.append(str(path))
+
+    engine = CleaningEngine()
+    cleaned, report = engine.clean_merged_files(files)
+
+    assert list(cleaned.columns) == ["id", "nama", "nilai", "Sumber File"]
+    assert len(cleaned) == 4
+    assert report["baris_awal"] == 5
+    assert report["duplikat_antar_file"] == 1
+    assert report["total_duplikat_dihapus"] == 1
+    assert set(cleaned["Sumber File"]) == {"jan.csv", "feb.csv", "mar.csv"}
+    assert [item["baris_awal"] for item in report["file_details"]] == [2, 2, 1]
+
+
+def test_merge_rejects_different_column_structure(tmp_path):
+    first = tmp_path / "jan.csv"
+    second = tmp_path / "feb.csv"
+    pd.DataFrame([[1, "andi"]], columns=["id", "nama"]).to_csv(first, index=False)
+    pd.DataFrame([[2, "budi"]], columns=["id", "nama_lengkap"]).to_csv(second, index=False)
+
+    with pytest.raises(ValueError, match=r"Struktur kolom tidak sama.*feb\.csv"):
+        CleaningEngine().clean_merged_files([str(first), str(second)])
+
+
+def test_merge_summary_contains_per_file_breakdown(tmp_path):
+    files = []
+    for name in ("jan", "feb", "mar"):
+        path = tmp_path / f"{name}.csv"
+        pd.DataFrame([[1, "produk"]], columns=["id", "nama"]).to_csv(path, index=False)
+        files.append(str(path))
+
+    engine = CleaningEngine()
+    cleaned, report = engine.clean_merged_files(files)
+    output = tmp_path / "merged.xlsx"
+    engine.export_excel(cleaned, str(output), report=report)
+
+    summary = openpyxl.load_workbook(output)["Cleaning Summary"]
+    values = [cell.value for row in summary.iter_rows() for cell in row]
+    assert "Initial Rows" in values
+    assert "jan.csv" in values
+    assert "  • Duplikat Antar-File (Cross-File)" in values
 
 
 def _create_dummy_3sheet_excel(file_path):

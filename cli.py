@@ -154,12 +154,72 @@ def process_single_file(file_path, args, engine, config):
         return True
 
 
+def process_merged_files(file_paths, args, engine, config):
+    """Menggabungkan, membersihkan, dan mengekspor beberapa file sebagai satu hasil."""
+    print("=" * 60)
+    print(f"🚀 Menggabungkan {len(file_paths)} file")
+    print("=" * 60)
+
+    base_name = os.path.splitext(os.path.basename(file_paths[0]))[0]
+    out_format = args.format.lower()
+    if args.output:
+        if os.path.isdir(args.output):
+            extension = ".xlsx" if out_format == "excel" else ".csv"
+            out_file = os.path.join(args.output, f"{base_name}_merged_bersih{extension}")
+        else:
+            out_file = args.output
+    else:
+        extension = ".xlsx" if out_format == "excel" else ".csv"
+        out_file = os.path.join("data", "output", f"{base_name}_merged_bersih{extension}")
+
+    formatting_cfg = config.get("formatting", {})
+    theme = args.theme or formatting_cfg.get("theme", "corporate_blue")
+    currency = args.currency or formatting_cfg.get("currency", "IDR")
+    sheet_name = formatting_cfg.get("sheet_name", "Data Bersih")
+    add_total = not args.no_total if args.no_total is not None else formatting_cfg.get("add_total_row", True)
+    include_summary = not args.no_summary if args.no_summary is not None else formatting_cfg.get("include_summary_sheet", True)
+
+    try:
+        df, report = engine.clean_merged_files(file_paths)
+    except Exception as e:
+        print(f"❌ Gagal menggabungkan file: {e}")
+        return False
+
+    if out_format == "excel":
+        engine.export_excel(
+            df,
+            out_file,
+            report=report,
+            theme=theme,
+            currency=currency,
+            sheet_name=sheet_name,
+            add_total_row=add_total,
+            include_summary_sheet=include_summary,
+        )
+    else:
+        output_dir = os.path.dirname(out_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        df.to_csv(out_file, index=False)
+        print(f"💾 File CSV hasil merge berhasil disimpan ke: {out_file}")
+
+    print()
+    print("📊 Ringkasan Merge:")
+    print(f"   - File digabung: {report['total_files']}")
+    print(f"   - Baris awal total: {report['baris_awal']} | Baris akhir: {report['baris_akhir']}")
+    print(f"   - Duplikat antar-file: {report['duplikat_antar_file']}")
+    print("=" * 60)
+    print()
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="ExcelCleaner Pro — Tool Pembersih Data & Formatter Excel Profesional"
     )
     parser.add_argument(
         "input",
+        nargs="?",
         help="Path ke file input (CSV/Excel) atau direktori jika menggunakan mode -b/--batch",
     )
     parser.add_argument(
@@ -214,6 +274,16 @@ def main():
         action="store_true",
         help="Mode batch: bersihkan semua file .csv dan .xlsx di direktori input",
     )
+    parser.add_argument(
+        "--merge",
+        help="Gabungkan daftar file CSV/Excel yang dipisahkan koma menjadi satu input",
+        default=None,
+    )
+    parser.add_argument(
+        "--merge-folder",
+        help="Gabungkan semua file CSV/Excel dalam folder menjadi satu input",
+        default=None,
+    )
 
 
     args = parser.parse_args()
@@ -223,10 +293,46 @@ def main():
     print("╚══════════════════════════════════════════════════════════╝")
     print()
 
+    if args.merge and args.merge_folder:
+        parser.error("Gunakan salah satu --merge atau --merge-folder, bukan keduanya.")
+    if args.batch and (args.merge or args.merge_folder):
+        parser.error("Mode --batch tidak dapat digabung dengan --merge atau --merge-folder.")
+    if not args.input and not (args.merge or args.merge_folder):
+        parser.error("Input file wajib diisi, kecuali menggunakan --merge atau --merge-folder.")
+
     config = load_yaml_config(args.config)
     engine = CleaningEngine(config=config)
 
-    if args.batch:
+    if args.merge or args.merge_folder:
+        valid_exts = [".csv", ".xlsx", ".xls"]
+        if args.merge:
+            files = [path.strip() for path in args.merge.split(",") if path.strip()]
+        else:
+            if not os.path.isdir(args.merge_folder):
+                print(f"❌ Error: '{args.merge_folder}' bukan folder yang valid untuk mode merge.")
+                sys.exit(1)
+            files = [
+                os.path.join(args.merge_folder, name)
+                for name in sorted(os.listdir(args.merge_folder))
+                if os.path.splitext(name)[1].lower() in valid_exts
+            ]
+
+        if len(files) < 2:
+            print("❌ Error: Mode merge membutuhkan minimal 2 file CSV/Excel.")
+            sys.exit(1)
+        missing_files = [path for path in files if not os.path.isfile(path)]
+        if missing_files:
+            print(f"❌ Error: File tidak ditemukan: {', '.join(missing_files)}")
+            sys.exit(1)
+
+        print("📂 File yang akan digabungkan:")
+        for file_path in files:
+            print(f"   • {file_path}")
+        print()
+        if not process_merged_files(files, args, engine, config):
+            sys.exit(1)
+
+    elif args.batch:
         if not os.path.isdir(args.input):
             print(f"❌ Error: '{args.input}' bukan folder yang valid untuk mode batch.")
             sys.exit(1)
