@@ -7,6 +7,7 @@ import openpyxl
 import pandas as pd
 import pytest
 from cleaner.engine import CleaningEngine
+from cli import analyze_auto_files
 
 
 def test_full_pipeline_on_sample_csv(tmp_path):
@@ -183,6 +184,49 @@ def test_join_rejects_key_missing_in_specific_file(tmp_path):
 
     with pytest.raises(ValueError, match=r"Key 'ID_Produk'.*produk\.csv"):
         CleaningEngine().clean_joined_files([str(first), str(second), str(third)], ["ID", "ID_Produk"])
+
+def test_auto_recommends_merge_for_identical_headers(tmp_path):
+    files = []
+    for name in ("jan", "feb", "mar"):
+        path = tmp_path / f"{name}.csv"
+        pd.DataFrame([[1, "produk"]], columns=["ID", "Nama"]).to_csv(path, index=False)
+        files.append(str(path))
+
+    analysis = analyze_auto_files(files)
+
+    assert analysis["mode"] == "merge"
+    assert analysis["keys"] == []
+
+
+def test_auto_recommends_join_for_clear_chain(tmp_path):
+    first = tmp_path / "pelanggan.csv"
+    second = tmp_path / "transaksi.csv"
+    third = tmp_path / "produk.csv"
+    pd.DataFrame([[1]], columns=["ID"]).to_csv(first, index=False)
+    pd.DataFrame([[1, "P01"]], columns=["ID", "ID_Produk"]).to_csv(second, index=False)
+    pd.DataFrame([["P01"]], columns=["ID_Produk"]).to_csv(third, index=False)
+
+    analysis = analyze_auto_files([str(first), str(second), str(third)])
+
+    assert analysis["mode"] == "join"
+    assert [os.path.basename(path) for path in analysis["chain"]] == [
+        "pelanggan.csv", "transaksi.csv", "produk.csv"
+    ]
+    assert analysis["keys"] == ["ID", "ID_Produk"]
+
+
+def test_auto_rejects_ambiguous_structure(tmp_path):
+    first = tmp_path / "first.csv"
+    second = tmp_path / "second.csv"
+    third = tmp_path / "third.csv"
+    pd.DataFrame([[1, "a"]], columns=["ID", "NilaiA"]).to_csv(first, index=False)
+    pd.DataFrame([[1, "b"]], columns=["ID", "NilaiB"]).to_csv(second, index=False)
+    pd.DataFrame([[1, "c"]], columns=["ID", "NilaiC"]).to_csv(third, index=False)
+
+    analysis = analyze_auto_files([str(first), str(second), str(third)])
+
+    assert analysis["mode"] == "unknown"
+    assert "tidak yakin" in analysis["reason"]
 
 
 def _create_dummy_3sheet_excel(file_path):

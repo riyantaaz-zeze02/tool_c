@@ -14,7 +14,7 @@ import yaml
 
 from cleaner.engine import CleaningEngine
 from cleaner.formatter.themes import THEMES
-from cleaner.reader import get_sheet_names
+from cleaner.reader import baca_header, get_sheet_names
 
 
 
@@ -35,6 +35,119 @@ def load_yaml_config(config_path):
             print(f"⚠️  Gagal memuat config '{config_path}': {e}. Menggunakan default.")
             return {}
     return {}
+
+
+def analyze_auto_files(file_paths):
+    """Menganalisis header file dan merekomendasikan merge, join, atau manual."""
+    headers = {path: baca_header(path) for path in file_paths}
+
+    if len({tuple(columns) for columns in headers.values()}) == 1:
+        return {
+            "mode": "merge",
+            "files": list(file_paths),
+            "headers": headers,
+            "candidate_keys": {},
+            "chain": list(file_paths),
+            "keys": [],
+            "reason": f"Terdeteksi {len(file_paths)} file dengan struktur kolom identik persis.",
+        }
+
+    key_files = {}
+    for path, columns in headers.items():
+        for column in columns:
+            key_files.setdefault(column, []).append(path)
+    candidate_keys = {key: paths for key, paths in key_files.items() if len(paths) > 1}
+
+    shared_by_all = [key for key, paths in candidate_keys.items() if len(paths) == len(file_paths)]
+    if shared_by_all:
+        return {
+            "mode": "unknown",
+            "files": list(file_paths),
+            "headers": headers,
+            "candidate_keys": candidate_keys,
+            "chain": [],
+            "keys": [],
+            "reason": f"Struktur berbeda dan kandidat key {', '.join(shared_by_all)} muncul di semua file; tool tidak yakin menentukan pasangan join.",
+        }
+
+    import itertools
+
+    candidates = []
+    for order in itertools.permutations(file_paths):
+        edge_keys = []
+        score = 0
+        valid = True
+        for left_path, right_path in zip(order, order[1:]):
+            shared = [key for key in headers[left_path] if key in headers[right_path]]
+            if not shared:
+                valid = False
+                break
+            edge_keys.append(shared)
+            score += len(shared)
+        if valid:
+            candidates.append((score, order, edge_keys))
+
+    if not candidates:
+        return {
+            "mode": "unknown",
+            "files": list(file_paths),
+            "headers": headers,
+            "candidate_keys": candidate_keys,
+            "chain": [],
+            "keys": [],
+            "reason": "Struktur berbeda, tetapi tidak ditemukan rantai kolom kunci yang menghubungkan semua file.",
+        }
+
+    best_score = max(item[0] for item in candidates)
+    best = [item for item in candidates if item[0] == best_score]
+    supplied_order = [item for item in best if tuple(item[1]) == tuple(file_paths)]
+    if supplied_order:
+        best = supplied_order
+    unique_shapes = {
+        (tuple(item[1]), tuple(tuple(keys) for keys in item[2]))
+        for item in best
+    }
+    if len(unique_shapes) != 1 or any(len(keys) != 1 for keys in best[0][2]):
+        return {
+            "mode": "unknown",
+            "files": list(file_paths),
+            "headers": headers,
+            "candidate_keys": candidate_keys,
+            "chain": [],
+            "keys": [],
+            "reason": "Struktur berbeda dan kandidat kolom kunci ambigu; tool tidak yakin menentukan urutan join.",
+        }
+
+    _, chain, edge_keys = best[0]
+    return {
+        "mode": "join",
+        "files": list(file_paths),
+        "headers": headers,
+        "candidate_keys": candidate_keys,
+        "chain": list(chain),
+        "keys": [edge[0] for edge in edge_keys],
+        "reason": f"Terdeteksi {len(file_paths)} file dengan struktur berbeda dan rantai key yang jelas.",
+    }
+
+
+def print_auto_analysis(analysis):
+    """Menampilkan hasil analisis auto secara ringkas dan dapat diaudit."""
+    files = analysis["files"]
+    headers = analysis["headers"]
+    print(f"🔎 Analisis header-only untuk {len(files)} file:")
+    for path in files:
+        print(f"   • {os.path.basename(path)}: {', '.join(headers[path])}")
+    print(f"📌 {analysis['reason']}")
+    for key, paths in analysis["candidate_keys"].items():
+        names = " ↔ ".join(os.path.basename(path) for path in paths)
+        print(f"🔑 Kandidat key '{key}': {names}")
+    if analysis["mode"] == "join":
+        chain_names = [os.path.basename(path) for path in analysis["chain"]]
+        print(f"✅ Rekomendasi: mode JOIN ({' → '.join(chain_names)}; keys: {', '.join(analysis['keys'])})")
+    elif analysis["mode"] == "merge":
+        print("✅ Rekomendasi: mode TUMPUK / MERGE")
+    else:
+        print("⚠️  Rekomendasi: TIDAK YAKIN. Tentukan --merge atau --join secara manual.")
 
 
 def process_single_file(file_path, args, engine, config):
@@ -347,6 +460,11 @@ def main():
         help="Daftar key join berurutan, dipisahkan koma (N file membutuhkan N-1 key)",
         default=None,
     )
+    parser.add_argument(
+        "--auto",
+        help="Analisis header beberapa file lalu rekomendasikan merge atau join",
+        default=None,
+    )
 
 
     args = parser.parse_args()
@@ -358,18 +476,46 @@ def main():
 
     if args.merge and args.merge_folder:
         parser.error("Gunakan salah satu --merge atau --merge-folder, bukan keduanya.")
-    active_modes = [bool(args.batch), bool(args.merge or args.merge_folder), bool(args.join)]
+    active_modes = [bool(args.batch), bool(args.merge or args.merge_folder), bool(args.join), bool(args.auto)]
     if sum(active_modes) > 1:
-        parser.error("Gunakan hanya satu mode: input tunggal, --batch, --merge, atau --join.")
+        parser.error("Gunakan hanya satu mode: input tunggal, --batch, --merge, --join, atau --auto.")
     if args.join and not args.keys:
         parser.error("Mode --join membutuhkan --keys.")
-    if not args.input and not (args.merge or args.merge_folder or args.join):
-        parser.error("Input file wajib diisi, kecuali menggunakan --merge, --merge-folder, atau --join.")
+    if not args.input and not (args.merge or args.merge_folder or args.join or args.auto):
+        parser.error("Input file wajib diisi, kecuali menggunakan --merge, --merge-folder, --join, atau --auto.")
 
     config = load_yaml_config(args.config)
     engine = CleaningEngine(config=config)
 
-    if args.join:
+    if args.auto:
+        files = [path.strip() for path in args.auto.split(",") if path.strip()]
+        valid_exts = [".csv", ".xlsx", ".xls"]
+        if len(files) < 2:
+            parser.error("Mode --auto membutuhkan minimal 2 file.")
+        missing_files = [path for path in files if not os.path.isfile(path)]
+        unsupported_files = [path for path in files if os.path.splitext(path)[1].lower() not in valid_exts]
+        if missing_files:
+            parser.error(f"File tidak ditemukan: {', '.join(missing_files)}")
+        if unsupported_files:
+            parser.error(f"Format file tidak didukung: {', '.join(unsupported_files)}")
+        try:
+            analysis = analyze_auto_files(files)
+        except Exception as error:
+            parser.error(f"Gagal membaca header file: {error}")
+        print_auto_analysis(analysis)
+        if analysis["mode"] == "unknown":
+            sys.exit(2)
+        confirmation = input("Lanjutkan dengan mode ini? [y/n]: ").strip().lower()
+        if confirmation not in {"y", "yes"}:
+            print("⏹️  Dibatalkan. Tidak ada data yang diproses.")
+            sys.exit(0)
+        if analysis["mode"] == "merge":
+            if not process_merged_files(files, args, engine, config):
+                sys.exit(1)
+        elif not process_joined_files(analysis["chain"], analysis["keys"], args, engine, config):
+            sys.exit(1)
+
+    elif args.join:
         files = [path.strip() for path in args.join.split(",") if path.strip()]
         keys = [key.strip() for key in args.keys.split(",") if key.strip()]
         valid_exts = [".csv", ".xlsx", ".xls"]

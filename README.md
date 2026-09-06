@@ -149,6 +149,12 @@ Gunakan perintah terminal yang fleksibel:
   ```
   Join dilakukan berurutan sebagai `left join`: file pertama digabung dengan file kedua memakai key pertama, lalu hasilnya digabung dengan file berikutnya memakai key berikutnya. Jumlah key wajib selalu satu lebih sedikit dari jumlah file. `Cleaning Summary` mencatat baris matched, unmatched, dan match rate untuk setiap tahap.
 
+* **Mode Auto (Analisis Struktur Sebelum Memilih Mode):**
+  ```bash
+  python cli.py --auto "data/input/jan.csv,data/input/feb.csv,data/input/mar.csv"
+  ```
+  Tool hanya membaca header terlebih dahulu, lalu menampilkan alasan rekomendasi `TUMPUK` atau `JOIN` beserta kandidat key dan urutan chain. Pemrosesan baru dimulai setelah konfirmasi `y`; masukan `n` membatalkan tanpa mengolah data. Jika kandidat key ambigu atau tidak ada rantai yang jelas, tool berhenti dengan status `TIDAK YAKIN` dan meminta mode manual.
+
 * **Ekspor sebagai File CSV Saja:**
   ```bash
   python cli.py data/input/contoh_data.csv --format csv

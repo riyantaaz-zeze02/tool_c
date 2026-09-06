@@ -100,3 +100,16 @@ def baca_data(file_path, sheet_name=0):
     return df
 
 
+def baca_header(file_path, sheet_name=0):
+    """Membaca nama kolom saja tanpa memuat baris data."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File '{file_path}' tidak ditemukan!")
+
+    ekstensi = os.path.splitext(file_path)[1].lower()
+    if ekstensi == ".csv":
+        return read_csv_with_fallback(file_path, nrows=0).columns.tolist()
+    if ekstensi in [".xlsx", ".xls"]:
+        return pd.read_excel(file_path, sheet_name=sheet_name, nrows=0).columns.tolist()
+    raise ValueError(f"Format '{ekstensi}' tidak didukung! Gunakan .csv, .xlsx, atau .xls")
+
+
