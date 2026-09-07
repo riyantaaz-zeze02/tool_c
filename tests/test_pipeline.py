@@ -7,6 +7,7 @@ import openpyxl
 import pandas as pd
 import pytest
 from cleaner.engine import CleaningEngine
+from cleaner.ui_helpers import default_sheet_selection
 from cli import analyze_auto_files
 
 
@@ -283,6 +284,31 @@ def test_multisheet_process_single_sheet_preserves_others(tmp_path):
 
     # Pastikan sheet yang tidak disentuh (Ringkasan) formulanya tetap utuh
     assert wb_out["Ringkasan"]["B2"].value == "=SUM(1000, 2500, 1500)"
+
+
+def test_multisheet_default_selection_is_first_sheet_only():
+    assert default_sheet_selection(["Penjualan", "Pelanggan", "Ringkasan"]) == ["Penjualan"]
+
+
+def test_multisheet_default_workflow_only_cleans_first_sheet(tmp_path):
+    input_file = str(tmp_path / "input_default_3sheet.xlsx")
+    _create_dummy_3sheet_excel(input_file)
+
+    engine = CleaningEngine()
+    cleaned_results = engine.clean_sheets(
+        input_file,
+        sheets=default_sheet_selection(["Penjualan", "Pelanggan", "Ringkasan"]),
+    )
+    output_file = str(tmp_path / "output_default_3sheet.xlsx")
+    engine.export_excel(cleaned_results, output_file, original_file_path=input_file)
+
+    input_workbook = openpyxl.load_workbook(input_file, data_only=False)
+    output_workbook = openpyxl.load_workbook(output_file, data_only=False)
+    assert len(cleaned_results) == 1
+    assert len(output_workbook["Penjualan"]["A"]) >= len(input_workbook["Penjualan"]["A"])
+    assert output_workbook["Pelanggan"]["A2"].value == input_workbook["Pelanggan"]["A2"].value
+    assert output_workbook["Ringkasan"]["B2"].value == "=SUM(1000, 2500, 1500)"
+    assert output_workbook["Ringkasan"]["B2"].value == input_workbook["Ringkasan"]["B2"].value
 
 
 def test_multisheet_process_multiple_sheets_and_report(tmp_path):

@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 
+import openpyxl
 import pandas as pd
 import streamlit as st
 import yaml
@@ -18,6 +19,7 @@ from cli import analyze_auto_files
 from cleaner.engine import CleaningEngine
 from cleaner.formatter.themes import THEMES
 from cleaner.reader import get_sheet_names, read_csv_with_fallback
+from cleaner.ui_helpers import default_sheet_selection
 
 
 def read_uploaded_dataframe(uploaded_file):
@@ -56,6 +58,20 @@ def get_uploaded_sheet_names(uploaded_file):
     if not uploaded_file.name.lower().endswith((".xlsx", ".xls")):
         return []
     return list(pd.ExcelFile(io.BytesIO(uploaded_file.getvalue())).sheet_names)
+
+
+def sheet_has_formula(uploaded_file, sheet_name):
+    """Detect formulas in an uploaded workbook without evaluating them."""
+    workbook = openpyxl.load_workbook(io.BytesIO(uploaded_file.getvalue()), data_only=False, read_only=True)
+    worksheet = workbook[sheet_name]
+    try:
+        return any(
+            isinstance(cell.value, str) and cell.value.startswith("=")
+            for row in worksheet.iter_rows()
+            for cell in row
+        )
+    finally:
+        workbook.close()
 
 
 def load_uploaded_config(uploaded_config):
@@ -191,13 +207,24 @@ if uploaded_files and work_mode == "Single File":
         sheet_names = get_uploaded_sheet_names(uploaded_file)
         if len(sheet_names) > 1:
             st.subheader(f"Pilih Sheet: {uploaded_file.name}")
-            single_all_sheets = st.checkbox("Pilih Semua Sheet", value=True, key="single_all_sheets")
+            single_all_sheets = st.checkbox("Pilih Semua Sheet", value=False, key="single_all_sheets")
             single_selected_sheets = st.multiselect(
                 "Sheet yang dibersihkan",
                 options=sheet_names,
-                default=sheet_names if single_all_sheets else sheet_names[:1],
+                default=sheet_names if single_all_sheets else default_sheet_selection(sheet_names),
                 key="single_selected_sheets",
             )
+            st.caption(
+                "Sheet yang tidak dicentang akan disalin apa adanya (formula & data asli tetap utuh), "
+                "tidak ikut dibersihkan."
+            )
+            for sheet_name in sheet_names:
+                sheet_preview = pd.read_excel(io.BytesIO(uploaded_file.getvalue()), sheet_name=sheet_name)
+                if len(sheet_preview) <= 1 or sheet_has_formula(uploaded_file, sheet_name):
+                    st.warning(
+                        f"Sheet '{sheet_name}' terdeteksi kemungkinan berisi formula/ringkasan — "
+                        "pertimbangkan untuk TIDAK mencentangnya kalau tidak perlu dibersihkan."
+                    )
             if not single_selected_sheets:
                 st.error("Pilih minimal satu sheet untuk diproses.")
             else:
