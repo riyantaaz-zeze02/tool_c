@@ -205,37 +205,12 @@ class CleaningEngine:
         if not file_paths or len(file_paths) < 2:
             raise ValueError("Perlu minimal 2 file untuk operasi penggabungan (merge).")
 
+        raw_files = self.validate_merged_files(file_paths, sheet_name=sheet_name)
+
         # 1. Baca semua file dan catat metrik awal
-        raw_files = []
-        for f in file_paths:
-            if not os.path.exists(f):
-                raise FileNotFoundError(f"File '{f}' tidak ditemukan!")
-            df = baca_data(f, sheet_name=sheet_name)
-            fname = os.path.basename(f)
-            raw_files.append((f, fname, df.copy()))
-
-        # 2. Validasi struktur kolom persis sama (Requirement 2)
         file_list = [fname for _, fname, _ in raw_files]
-        base_file = file_list[0]
-        base_cols = list(raw_files[0][2].columns)
 
-        for _, curr_file, curr_df in raw_files[1:]:
-            curr_cols = list(curr_df.columns)
-            if curr_cols != base_cols:
-                missing_in_curr = [c for c in base_cols if c not in curr_cols]
-                extra_in_curr = [c for c in curr_cols if c not in base_cols]
-                err_lines = [
-                    f"Struktur kolom tidak sama! File '{curr_file}' berbeda dengan file acuan '{base_file}'.",
-                    f"   • Kolom acuan ({base_file}): {base_cols}",
-                    f"   • Kolom ditemukan ({curr_file}): {curr_cols}",
-                ]
-                if missing_in_curr:
-                    err_lines.append(f"   • Kolom hilang di '{curr_file}': {missing_in_curr}")
-                if extra_in_curr:
-                    err_lines.append(f"   • Kolom tambahan di '{curr_file}': {extra_in_curr}")
-                raise ValueError("\n".join(err_lines))
-
-        # 3. Tandai asal file di setiap baris (Requirement 3) & tumpuk dengan pd.concat (Requirement 4)
+        # 2. Tandai asal file di setiap baris dan tumpuk dengan pd.concat
         tagged_dfs = []
         for _, fname, df in raw_files:
             df_tagged = df.copy()
@@ -245,7 +220,7 @@ class CleaningEngine:
         df_merged = pd.concat(tagged_dfs, ignore_index=True)
         total_initial_rows = len(df_merged)
 
-        # 4. Deteksi duplikat intra-file vs antar-file sebelum deduplikasi (Requirement 5 & 6)
+        # 3. Deteksi duplikat intra-file vs antar-file sebelum deduplikasi
         feat_cols = [c for c in df_merged.columns if c != source_col]
         first_seen_file = {}
         intra_dups_per_file = {fname: 0 for fname in file_list}
@@ -264,7 +239,7 @@ class CleaningEngine:
                 else:
                     cross_dups_total += 1
 
-        # 5. Jalankan cleaning pipeline pada hasil gabungan (Requirement 5)
+        # 4. Jalankan cleaning pipeline pada hasil gabungan
         dup_config = self.config.get("duplicate", {}).copy()
         if dup_config.get("subset") is None:
             dup_config["subset"] = feat_cols
@@ -298,7 +273,7 @@ class CleaningEngine:
         df_merged, log_number = bersihkan_angka(df_merged, config=self.config.get("number", {}))
         report["langkah"]["number"] = log_number
 
-        # Step 2: Tanggal
+        # Step 2: Parsing Tanggal
         df_merged, log_date = bersihkan_tanggal(df_merged, config=self.config.get("date", {}))
         report["langkah"]["date"] = log_date
 
@@ -321,6 +296,40 @@ class CleaningEngine:
 
         self.last_report = report
         return df_merged, report
+
+    def validate_merged_files(self, file_paths, sheet_name=0):
+        """Membaca file merge dan memvalidasi urutan kolomnya."""
+        if not file_paths or len(file_paths) < 2:
+            raise ValueError("Perlu minimal 2 file untuk operasi penggabungan (merge).")
+
+        raw_files = []
+        for f in file_paths:
+            if not os.path.exists(f):
+                raise FileNotFoundError(f"File '{f}' tidak ditemukan!")
+            df = baca_data(f, sheet_name=sheet_name)
+            fname = os.path.basename(f)
+            raw_files.append((f, fname, df.copy()))
+
+        file_list = [fname for _, fname, _ in raw_files]
+        base_file = file_list[0]
+        base_cols = list(raw_files[0][2].columns)
+
+        for _, curr_file, curr_df in raw_files[1:]:
+            curr_cols = list(curr_df.columns)
+            if curr_cols != base_cols:
+                missing_in_curr = [c for c in base_cols if c not in curr_cols]
+                extra_in_curr = [c for c in curr_cols if c not in base_cols]
+                err_lines = [
+                    f"Struktur kolom tidak sama! File '{curr_file}' berbeda dengan file acuan '{base_file}'.",
+                    f"   • Kolom acuan ({base_file}): {base_cols}",
+                    f"   • Kolom ditemukan ({curr_file}): {curr_cols}",
+                ]
+                if missing_in_curr:
+                    err_lines.append(f"   • Kolom hilang di '{curr_file}': {missing_in_curr}")
+                if extra_in_curr:
+                    err_lines.append(f"   • Kolom tambahan di '{curr_file}': {extra_in_curr}")
+                raise ValueError("\n".join(err_lines))
+        return raw_files
 
     def clean_joined_files(self, file_paths, keys, sheet_name=0, how="left"):
         """Melakukan chained join pada beberapa file lalu membersihkan hasil akhirnya."""
