@@ -15,6 +15,7 @@ from cleaner.rules.duplicate_handler import hapus_duplikat
 from cleaner.rules.text_cleaner import bersihkan_teks
 from cleaner.rules.number_cleaner import bersihkan_angka
 from cleaner.rules.date_cleaner import bersihkan_tanggal
+from cleaner.rules.date_cleaner import _convert_with_report
 from cleaner.formatter.excel_styler import ExcelStyler
 from cleaner.reporter import CleaningReporter
 import openpyxl
@@ -159,36 +160,32 @@ class CleaningEngine:
             value = value.strip()
             if value == "":
                 return None
-            if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", value):
+            if re.fullmatch(r"(?:\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})", value):
+                converted_date, _ = _convert_with_report(pd.Series([value]))
+                if converted_date is not None and pd.notna(converted_date.iloc[0]):
+                    return converted_date.iloc[0].strftime("%Y-%m-%d")
+
+            numeric_value = re.sub(r"^(?:rp|idr|usd|eur|gbp|jpy|cny|inr|[$€£¥₹])\s*", "", value, flags=re.IGNORECASE)
+            numeric_value = re.sub(r"\s*(?:rp|idr|usd|eur|gbp|jpy|cny|inr|[$€£¥₹])$", "", numeric_value, flags=re.IGNORECASE)
+            numeric_value = re.sub(r"(?:\[\d+\]|\(\d+\)|[*†‡¹²³⁴⁵⁶⁷⁸⁹⁰])+$", "", numeric_value).strip()
+            numeric_value = numeric_value.replace(" ", "")
+            if re.fullmatch(r"[+-]?\d[\d.,]*", numeric_value):
+                if "," in numeric_value and "." in numeric_value:
+                    if numeric_value.rfind(",") > numeric_value.rfind("."):
+                        numeric_value = numeric_value.replace(".", "").replace(",", ".")
+                    else:
+                        numeric_value = numeric_value.replace(",", "")
+                elif "," in numeric_value:
+                    if re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:,\d+)?", numeric_value):
+                        numeric_value = numeric_value.replace(",", "")
+                    else:
+                        numeric_value = numeric_value.replace(",", ".")
+                elif "." in numeric_value and re.fullmatch(r"\d{1,3}(?:\.\d{3})+", numeric_value):
+                    numeric_value = numeric_value.replace(".", "")
                 try:
-                    return pd.to_datetime(value).strftime("%Y-%m-%d")
-                except Exception:
+                    return float(numeric_value)
+                except ValueError:
                     pass
-            if re.fullmatch(r"\d{1,2}[/-]\d{1,2}[/-]\d{4}", value):
-                try:
-                    return pd.to_datetime(value, errors="coerce").strftime("%Y-%m-%d")
-                except Exception:
-                    pass
-            if re.search(r"\d", value):
-                numeric_only = re.sub(r"[^0-9,\.\-]", "", value)
-                if numeric_only:
-                    if "," in numeric_only and "." in numeric_only:
-                        if numeric_only.rfind(",") > numeric_only.rfind("."):
-                            numeric_only = numeric_only.replace(".", "").replace(",", ".")
-                        else:
-                            numeric_only = numeric_only.replace(",", "")
-                    elif "," in numeric_only and "." not in numeric_only:
-                        if re.match(r"^\d{1,3}(?:,\d{3})+(?:,\d+)?$", numeric_only):
-                            numeric_only = numeric_only.replace(",", "")
-                        else:
-                            numeric_only = numeric_only.replace(",", ".")
-                    elif "." in numeric_only and "," not in numeric_only:
-                        if re.match(r"^\d{1,3}(?:\.\d{3})+$", numeric_only):
-                            numeric_only = numeric_only.replace(".", "")
-                    try:
-                        return float(numeric_only)
-                    except ValueError:
-                        pass
             return value.lower()
         if isinstance(value, (int, float)):
             if pd.isna(value):
@@ -229,6 +226,7 @@ class CleaningEngine:
         base_rows_before = len(base_df)
         base_df = self._drop_total_rows(base_df)
         base_total_row_dibuang = base_rows_before - len(base_df)
+        base_df, _ = bersihkan_tanggal(base_df, config=self.config.get("date", {}))
 
         if source_col is not None:
             source_col = str(source_col)
@@ -247,6 +245,7 @@ class CleaningEngine:
         file_details = []
         total_added = 0
         total_skipped = 0
+        total_new_rows = 0
         langkah = []
 
         for new_path in new_paths:
@@ -255,6 +254,7 @@ class CleaningEngine:
             raw_new = baca_data(new_path, sheet_name=sheet_name).copy()
             current_name = os.path.basename(new_path)
             raw_new = self._drop_total_rows(raw_new)
+            total_new_rows += len(raw_new)
 
             if set(map(str, raw_new.columns)) != set(map(str, base_cols)):
                 base_names = [str(c) for c in base_cols]
@@ -327,7 +327,7 @@ class CleaningEngine:
             "file_details": file_details,
             "total_ditambahkan": total_added,
             "total_dilewati": total_skipped,
-            "baris_awal": len(base_df) + sum(len(pd.read_csv(p)) if os.path.splitext(p)[1].lower() == ".csv" else len(pd.read_excel(p)) for p in new_paths),
+            "baris_awal": len(base_df) + total_new_rows,
             "baris_akhir": len(final_df),
             "kolom_awal": len(base_df.columns),
             "kolom_akhir": len(final_df.columns),

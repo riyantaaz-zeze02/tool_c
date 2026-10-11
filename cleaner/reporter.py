@@ -111,8 +111,110 @@ class CleaningReporter:
 
         is_join = isinstance(report_dict, dict) and report_dict.get("is_join", False)
         is_merge = isinstance(report_dict, dict) and report_dict.get("is_merge", False)
+        is_append = isinstance(report_dict, dict) and report_dict.get("is_append", False)
 
-        if is_join:
+        if is_append:
+            ws.cell(row=5, column=2, value="APPEND SUMMARY").font = section_font
+            file_details = report_dict.get("file_details", [])
+            incoming_rows = sum(item.get("baris_awal", 0) for item in file_details)
+            metrics = [
+                ("Operation Mode", "Append & Cleaning"),
+                ("Base Rows", report_dict.get("base_rows", 0)),
+                ("Incoming Rows Read", incoming_rows),
+                ("Rows Added", report_dict.get("total_ditambahkan", 0)),
+                ("Rows Skipped", report_dict.get("total_dilewati", 0)),
+                ("Final Rows", report_dict.get("baris_akhir", 0)),
+                ("Base TOTAL Rows Removed", report_dict.get("base_total_row_dibuang", 0)),
+            ]
+            for idx, (label, val) in enumerate(metrics, start=6):
+                c_label = ws.cell(row=idx, column=2, value=label)
+                c_label.font = label_font
+                c_label.border = thin_border
+                c_label.fill = zebra_fill
+                c_val = ws.cell(row=idx, column=3, value=val)
+                c_val.font = value_font
+                c_val.border = thin_border
+                if isinstance(val, (int, float)):
+                    c_val.alignment = Alignment(horizontal="right")
+                    c_val.number_format = "#,##0"
+
+            row_file_start = 6 + len(metrics) + 2
+            ws.cell(row=row_file_start - 1, column=2, value="APPEND FILE DETAILS").font = section_font
+            file_headers = ["No", "Source File", "Rows Read", "Added", "Skipped vs Base", "Duplicate in New Files"]
+            for col_i, header in enumerate(file_headers, start=2):
+                cell = ws.cell(row=row_file_start, column=col_i, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            for file_index, detail in enumerate(file_details, start=1):
+                values = [
+                    file_index,
+                    detail.get("file", ""),
+                    detail.get("baris_awal", 0),
+                    detail.get("ditambahkan", 0),
+                    detail.get("dilewati_vs_base", 0),
+                    detail.get("dilewati_dalam_file_baru", 0),
+                ]
+                for col_i, value in enumerate(values, start=2):
+                    cell = ws.cell(row=row_file_start + file_index, column=col_i, value=value)
+                    cell.font = value_font
+                    cell.fill = zebra_fill if file_index % 2 else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+                    cell.border = thin_border
+                    if col_i == 2:
+                        cell.alignment = Alignment(horizontal="center")
+                    elif isinstance(value, (int, float)):
+                        cell.alignment = Alignment(horizontal="right")
+                        cell.number_format = "#,##0"
+
+            row_clean_start = row_file_start + len(file_details) + 3
+            ws.cell(row=row_clean_start - 1, column=2, value="NEW ROWS CLEANING SUMMARY").font = section_font
+            clean_headers = ["No", "Source File", "Rows Before", "Rows After", "Duplicates Removed", "Missing Dropped", "Cleaning Actions"]
+            for col_i, header in enumerate(clean_headers, start=2):
+                cell = ws.cell(row=row_clean_start, column=col_i, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+
+            clean_reports = report_dict.get("langkah", [])
+            for report_index, item in enumerate(clean_reports, start=1):
+                if not isinstance(item, dict):
+                    continue
+                clean_report = item.get("report", {})
+                actions = []
+                for step in ("number", "date", "missing", "text"):
+                    actions.extend(clean_report.get("langkah", {}).get(step, {}).get("aksi", []))
+                values = [
+                    report_index,
+                    item.get("file", ""),
+                    clean_report.get("baris_awal", 0),
+                    clean_report.get("baris_akhir", 0),
+                    clean_report.get("total_duplikat_dihapus", 0),
+                    clean_report.get("total_baris_didrop", 0),
+                    "; ".join(_translate_action(action) for action in actions) or "Data already clean",
+                ]
+                for col_i, value in enumerate(values, start=2):
+                    cell = ws.cell(row=row_clean_start + report_index, column=col_i, value=value)
+                    cell.font = value_font
+                    cell.fill = zebra_fill if report_index % 2 else PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+                    cell.border = thin_border
+                    if col_i == 2:
+                        cell.alignment = Alignment(horizontal="center")
+                    elif isinstance(value, (int, float)):
+                        cell.alignment = Alignment(horizontal="right")
+                        cell.number_format = "#,##0"
+
+            for col_i in range(2, 9):
+                col_letter = get_column_letter(col_i)
+                max_len = max(
+                    len(str(ws.cell(row=row, column=col_i).value or ""))
+                    for row in range(2, row_clean_start + len(clean_reports) + 2)
+                )
+                ws.column_dimensions[col_letter].width = min(max(max_len + 4, 15), 60)
+
+        elif is_join:
             ws.cell(row=5, column=2, value="JOIN FLOW").font = section_font
             metrics = [
                 ("Mode Operasi", "Chained Left Join & Cleaning"),

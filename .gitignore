@@ -57,6 +57,8 @@ venv.bak/
 # Temporary data outputs
 data/output/*
 !data/output/.gitkeep
+tmp_*
+debug_*
 
 # IDE & OS files
 .vscode/
