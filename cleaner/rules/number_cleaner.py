@@ -8,6 +8,22 @@ import pandas as pd
 import re
 
 
+
+_CURRENCY_SYMBOLS = r"(Rp\.?|IDR|USD|\$|€|£|¥)"
+
+
+def _strip_noise(value):
+    """Buang footnote ([a], [17]) dan simbol mata uang, lalu rapikan spasi."""
+    value = str(value).strip()
+    value = re.sub(r"\[[^\]]*\]", "", value)
+    value = re.sub(_CURRENCY_SYMBOLS + r"\s*", "", value, flags=re.IGNORECASE)
+    return value.strip()
+
+
+def _has_currency_symbol(value):
+    return re.search(_CURRENCY_SYMBOLS, str(value), flags=re.IGNORECASE) is not None
+
+
 def bersihkan_angka(df, config=None):
     """
     Membersihkan kolom yang berisi angka/mata uang dalam format string.
@@ -47,9 +63,14 @@ def bersihkan_angka(df, config=None):
                 if len(sample) == 0:
                     continue
 
-                # Cek apakah mengandung simbol mata uang
-                currency_pattern = r"^[\s]*(Rp\.?|USD|\$|€|£|¥)\s*[\d.,]+$"
-                if sample.str.match(currency_pattern, na=False).mean() > 0.5:
+                # Normalisasi sampel (buang footnote & simbol mata uang) supaya kolom
+                # campuran seperti "Rp 75.579", "75.579", "75,579[a]" tetap terdeteksi
+                norm = sample.map(_strip_noise)
+                numeric_share = norm.str.match(r"^[\d.,\s-]+$", na=False).mean()
+                has_symbol = sample.map(_has_currency_symbol).any()
+
+                # Kolom mengandung simbol mata uang dan isinya numerik -> currency
+                if has_symbol and numeric_share > 0.7:
                     kolom_currency.append(kolom)
                     continue
 
@@ -118,13 +139,8 @@ def _parse_currency(value):
     if pd.isna(value) or value in ("nan", "None", ""):
         return None
 
-    value = str(value).strip()
-
-    # Hapus footnote seperti [a], [b], [17], dll.
-    value = re.sub(r"\[[^\]]*\]", "", value).strip()
-
-    # Hapus simbol mata uang
-    value = re.sub(r"(Rp\.?\s*|USD\s*|\$|€|£|¥)", "", value).strip()
+    # Hapus footnote ([a], [17]) dan simbol mata uang (Rp, $, dll.)
+    value = _strip_noise(value)
 
     # Deteksi format Indonesia (titik = ribuan, koma = desimal)
     # vs format US/Intl (koma = ribuan, titik = desimal)
@@ -159,10 +175,8 @@ def _parse_angka(value):
     if pd.isna(value) or value in ("nan", "None", ""):
         return None
 
-    value = str(value).strip()
-
-    # Hapus footnote seperti [a], [b], [17], dll.
-    value = re.sub(r"\[[^\]]*\]", "", value).strip()
+    # Hapus footnote & simbol mata uang (kolom campuran bisa lolos ke sini)
+    value = _strip_noise(value)
 
     # Deteksi format Indonesia vs US
     if re.match(r"^[\d]+\.[\d]{3}", value):

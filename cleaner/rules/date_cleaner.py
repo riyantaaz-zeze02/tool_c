@@ -89,12 +89,20 @@ def bersihkan_tanggal(df, config=None):
         if pd.api.types.is_datetime64_any_dtype(df[kolom]):
             continue
 
-        converted = _convert_to_datetime(df[kolom])
+        converted, n_ambigu = _convert_with_report(df[kolom])
         if converted is not None:
             df[kolom] = converted
             log["kolom_diproses"].append(kolom)
             log["aksi"].append(f"'{kolom}' → datetime")
             print(f"   📅 Kolom '{kolom}' → dikonversi ke datetime")
+            if n_ambigu:
+                pesan = (
+                    f"'{kolom}': {n_ambigu} tanggal ambigu (hari/bulan sama-sama ≤12, "
+                    f"tidak ada bukti urutan) — diasumsikan DD/MM/YYYY, mohon dicek"
+                )
+                log.setdefault("peringatan", []).append(pesan)
+                log["aksi"].append("⚠️ " + pesan)
+                print(f"   ⚠️  {pesan}")
 
     if not log["kolom_diproses"]:
         print("   ✅ Tidak ada kolom tanggal yang perlu dikonversi.")
@@ -127,30 +135,106 @@ def _looks_like_date(series):
     return match_count / len(series) > 0.5
 
 
-def _convert_to_datetime(series):
+_NUMERIC_DATE_RE = r"^(\d{1,4})([-/.])(\d{1,2})\2(\d{1,4})$"
+_ISO_DATETIME_RE = r"^\d{4}-\d{1,2}-\d{1,2}[T ]\d"
+
+
+def _convert_with_report(series):
     """
-    Coba konversi Series ke datetime dengan berbagai format.
-    Return None jika gagal total.
+    Konversi Series ke datetime TANPA menebak urutan hari/bulan secara membabi buta.
+
+    Aturan:
+      - Tahun di depan (YYYY-MM-DD, YYYY.MM.DD, YYYY/MM/DD) -> selalu tahun-bulan-hari
+      - Nama bulan ("04 Jun 2025") -> tidak ambigu
+      - Numerik hari/bulan di depan -> urutan disimpulkan per kelompok separator
+        dari bukti nyata (ada angka >12 di posisi pertama = DD/MM, di posisi kedua = MM/DD)
+      - Jika tidak ada bukti -> default DD/MM/YYYY dan baris tsb DIHITUNG sebagai ambigu
+
+    Return: (Series datetime | None, jumlah_baris_ambigu)
     """
-    # Coba pandas auto-parse dengan format='mixed' dan dayfirst=True
-    try:
+    import numpy as np
+
+    valid = series.notna()
+    s = series.astype(str).str.strip()
+    result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    handled = pd.Series(False, index=series.index)
+    n_ambigu = 0
+
+    parts = s.str.extract(_NUMERIC_DATE_RE)
+    numeric = valid & parts[0].notna()
+    a_len = parts[0].str.len()
+    c_len = parts[3].str.len()
+
+    # 1) Tahun di depan -> ISO, tidak pernah ditukar
+    ymd = numeric & (a_len == 4)
+    if ymd.any():
+        iso = parts.loc[ymd, 0] + "-" + parts.loc[ymd, 2] + "-" + parts.loc[ymd, 3]
+        result.loc[ymd] = pd.to_datetime(iso, format="%Y-%m-%d", errors="coerce")
+        handled |= ymd
+
+    # 2) Hari/bulan di depan, tahun 4 digit -> simpulkan urutan per separator
+    dm = numeric & (a_len <= 2) & (c_len == 4)
+    for sep in parts.loc[dm, 1].dropna().unique():
+        grp = dm & (parts[1] == sep)
+        first = parts.loc[grp, 0].astype(int)
+        second = parts.loc[grp, 2].astype(int)
+        day_evidence = (first > 12).any()
+        month_evidence = (second > 12).any()
+        if day_evidence and not month_evidence:
+            default_dayfirst = True
+            has_clear_evidence = True
+        elif month_evidence and not day_evidence:
+            default_dayfirst = False
+            has_clear_evidence = True
+        else:
+            default_dayfirst = True  # default Indonesia: DD/MM/YYYY
+            has_clear_evidence = False
+
+        dayfirst = np.where(first > 12, True, np.where(second > 12, False, default_dayfirst))
+        day = np.where(dayfirst, first, second)
+        month = np.where(dayfirst, second, first)
+        year = parts.loc[grp, 3].astype(int)
+        result.loc[grp] = pd.to_datetime(
+            pd.DataFrame({"year": year, "month": month, "day": day}, index=first.index),
+            errors="coerce",
+        )
+        handled |= grp
+
+        if not has_clear_evidence:
+            n_ambigu += int(((first <= 12) & (second <= 12) & (first != second)).sum())
+
+    # 3) ISO dengan jam -> parse sebagai ISO8601 (jangan kena dayfirst)
+    iso_dt = valid & ~handled & s.str.match(_ISO_DATETIME_RE, na=False)
+    if iso_dt.any():
+        result.loc[iso_dt] = pd.to_datetime(s[iso_dt], format="ISO8601", errors="coerce")
+        handled |= iso_dt
+
+    # 4) Sisanya (nama bulan, dll.) -> pandas mixed
+    rest = valid & ~handled
+    if rest.any():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            result = pd.to_datetime(series, errors="coerce", format="mixed", dayfirst=True)
-        valid_count = series.dropna().count()
-        if valid_count > 0 and (result.notna().sum() / valid_count) >= 0.5:
-            return result
-    except Exception:
-        pass
+            result.loc[rest] = pd.to_datetime(
+                s[rest], errors="coerce", format="mixed", dayfirst=True
+            )
 
-    # Coba format-format yang umum satu per satu
+    valid_count = int(valid.sum())
+    if valid_count > 0 and (result.notna().sum() / valid_count) >= 0.5:
+        return result, n_ambigu
+
+    # Fallback lama: coba format umum satu per satu
     for fmt in COMMON_DATE_FORMATS:
         try:
-            result = pd.to_datetime(series, format=fmt, errors="coerce")
-            valid_count = series.dropna().count()
-            if valid_count > 0 and (result.notna().sum() / valid_count) >= 0.5:
-                return result
+            alt = pd.to_datetime(series, format=fmt, errors="coerce")
+            if valid_count > 0 and (alt.notna().sum() / valid_count) >= 0.5:
+                return alt, 0
         except Exception:
             continue
 
-    return None
+    return None, 0
+
+
+def _convert_to_datetime(series):
+    """Kompatibilitas: hanya mengembalikan Series (atau None)."""
+    converted, _ = _convert_with_report(series)
+    return converted
