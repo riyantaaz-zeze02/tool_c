@@ -7,6 +7,7 @@ dan mencatat audit trail (laporan statistik pembersihan).
 
 import pandas as pd
 import os
+import re
 from cleaner.reader import baca_data, get_sheet_names
 from cleaner.rules.missing_handler import tangani_missing
 
@@ -135,6 +136,206 @@ class CleaningEngine:
 
         self.last_report = report
         return df, report
+
+    def _drop_total_rows(self, df):
+        """Hapus baris TOTAL yang sering ditambah export_excel di akhir file."""
+        if df.empty or len(df.columns) == 0:
+            return df.copy()
+        first_col = df.columns[0]
+        total_mask = df[first_col].astype(str).str.strip().str.upper().eq("TOTAL")
+        if not total_mask.any():
+            return df.copy()
+        remaining_mask = df.drop(columns=[first_col]).isna().all(axis=1)
+        mask = total_mask & remaining_mask
+        if mask.any():
+            df = df.loc[~mask].copy().reset_index(drop=True)
+        return df
+
+    def _coerce_for_compare(self, value):
+        """Normalisasi tipe agar dedupe/append dibuat pada nilai yang setara."""
+        if pd.isna(value):
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return None
+            if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", value):
+                try:
+                    return pd.to_datetime(value).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            if re.fullmatch(r"\d{1,2}[/-]\d{1,2}[/-]\d{4}", value):
+                try:
+                    return pd.to_datetime(value, errors="coerce").strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            if re.search(r"\d", value):
+                numeric_only = re.sub(r"[^0-9,\.\-]", "", value)
+                if numeric_only:
+                    if "," in numeric_only and "." in numeric_only:
+                        if numeric_only.rfind(",") > numeric_only.rfind("."):
+                            numeric_only = numeric_only.replace(".", "").replace(",", ".")
+                        else:
+                            numeric_only = numeric_only.replace(",", "")
+                    elif "," in numeric_only and "." not in numeric_only:
+                        if re.match(r"^\d{1,3}(?:,\d{3})+(?:,\d+)?$", numeric_only):
+                            numeric_only = numeric_only.replace(",", "")
+                        else:
+                            numeric_only = numeric_only.replace(",", ".")
+                    elif "." in numeric_only and "," not in numeric_only:
+                        if re.match(r"^\d{1,3}(?:\.\d{3})+$", numeric_only):
+                            numeric_only = numeric_only.replace(".", "")
+                    try:
+                        return float(numeric_only)
+                    except ValueError:
+                        pass
+            return value.lower()
+        if isinstance(value, (int, float)):
+            if pd.isna(value):
+                return None
+            return float(value)
+        if hasattr(value, "to_pydatetime"):
+            try:
+                return value.to_pydatetime().strftime("%Y-%m-%d")
+            except Exception:
+                return str(value)
+        return str(value).strip().lower()
+
+    def _row_signature(self, row, dedupe_keys=None):
+        """Buat kunci dedupe yang netral terhadap urutan kolom dan tipe dasar."""
+        if dedupe_keys is None:
+            keys = list(row.index)
+        else:
+            keys = [key for key in dedupe_keys if key in row.index]
+        if not keys:
+            keys = list(row.index)
+        values = []
+        for key in keys:
+            values.append(self._coerce_for_compare(row.get(key)))
+        return tuple(values)
+
+    def append_files(self, base_path, new_paths, dedupe_keys=None, sheet_name=0, source_col=None):
+        """Tambahkan baris dari file baru ke file dasar tanpa membersihkan ulang base."""
+        if not base_path or not os.path.exists(base_path):
+            raise FileNotFoundError(f"File dasar '{base_path}' tidak ditemukan!")
+        if not new_paths:
+            raise ValueError("Perlu minimal 1 file baru untuk operasi append.")
+        if isinstance(new_paths, (str, os.PathLike)):
+            new_paths = [str(new_paths)]
+        if len(new_paths) == 0:
+            raise ValueError("Perlu minimal 1 file baru untuk operasi append.")
+
+        base_df = baca_data(base_path, sheet_name=sheet_name).copy()
+        base_rows_before = len(base_df)
+        base_df = self._drop_total_rows(base_df)
+        base_total_row_dibuang = base_rows_before - len(base_df)
+
+        if source_col is not None:
+            source_col = str(source_col)
+
+        base_cols = list(base_df.columns)
+        if source_col and source_col not in base_cols:
+            base_df[source_col] = os.path.basename(base_path)
+
+        base_seen = set()
+        for _, row in base_df.iterrows():
+            key = self._row_signature(row, dedupe_keys=dedupe_keys or base_cols)
+            base_seen.add(key)
+
+        final_frames = [base_df.copy()]
+        skipped_rows = []
+        file_details = []
+        total_added = 0
+        total_skipped = 0
+        langkah = []
+
+        for new_path in new_paths:
+            if not os.path.exists(new_path):
+                raise FileNotFoundError(f"File baru '{new_path}' tidak ditemukan!")
+            raw_new = baca_data(new_path, sheet_name=sheet_name).copy()
+            current_name = os.path.basename(new_path)
+            raw_new = self._drop_total_rows(raw_new)
+
+            if set(map(str, raw_new.columns)) != set(map(str, base_cols)):
+                base_names = [str(c) for c in base_cols]
+                incoming_names = [str(c) for c in raw_new.columns]
+                missing = [c for c in base_names if c not in incoming_names]
+                extra = [c for c in incoming_names if c not in base_names]
+                err_lines = [
+                    f"Struktur kolom tidak sama! File '{current_name}' berbeda dengan file acuan '{os.path.basename(base_path)}'.",
+                    f"   • Kolom acuan ({os.path.basename(base_path)}): {base_cols}",
+                    f"   • Kolom ditemukan ({current_name}): {list(raw_new.columns)}",
+                ]
+                if missing:
+                    err_lines.append(f"   • Kolom hilang di '{current_name}': {missing}")
+                if extra:
+                    err_lines.append(f"   • Kolom tambahan di '{current_name}': {extra}")
+                raise ValueError("\n".join(err_lines))
+
+            new_df = raw_new.reindex(columns=base_cols).copy()
+            if source_col is not None:
+                new_df[source_col] = current_name
+            cleaned_new, clean_report = self.clean(new_df)
+            langkah.append({"file": current_name, "report": clean_report})
+
+            seen_in_file = set()
+            kept_rows = []
+            kept_keys = []
+            for _, row in cleaned_new.iterrows():
+                key = self._row_signature(row, dedupe_keys=dedupe_keys or list(cleaned_new.columns))
+                if key in base_seen:
+                    skipped_rows.append({**row.to_dict(), "File Asal": current_name, "Alasan": "sudah ada di file dasar"})
+                    total_skipped += 1
+                    continue
+                if key in seen_in_file:
+                    skipped_rows.append({**row.to_dict(), "File Asal": current_name, "Alasan": "duplikat di file baru"})
+                    total_skipped += 1
+                    continue
+                seen_in_file.add(key)
+                kept_rows.append(row.to_dict())
+                kept_keys.append(key)
+                total_added += 1
+            base_seen.update(kept_keys)
+
+            added_df = pd.DataFrame(kept_rows, columns=cleaned_new.columns)
+            if not added_df.empty:
+                final_frames.append(added_df)
+
+            file_details.append({
+                "file": current_name,
+                "baris_awal": len(raw_new),
+                "ditambahkan": len(added_df),
+                "dilewati_vs_base": sum(1 for row in skipped_rows if row.get("File Asal") == current_name and row.get("Alasan") == "sudah ada di file dasar"),
+                "dilewati_dalam_file_baru": sum(1 for row in skipped_rows if row.get("File Asal") == current_name and row.get("Alasan") == "duplikat di file baru"),
+            })
+
+        final_df = pd.concat(final_frames, ignore_index=True)
+
+        if len(final_df) > 1_048_576:
+            raise ValueError("Data terlalu besar untuk satu sheet Excel (maks 1.048.576 baris)")
+
+        skipped_df = pd.DataFrame(skipped_rows)
+        if skipped_df.empty:
+            skipped_df = pd.DataFrame(columns=list(base_df.columns) + ["File Asal", "Alasan"])
+
+        report = {
+            "sumber": f"Append ({len(new_paths)} files)",
+            "is_append": True,
+            "source_col": source_col,
+            "base_rows": len(base_df),
+            "base_total_row_dibuang": base_total_row_dibuang,
+            "file_details": file_details,
+            "total_ditambahkan": total_added,
+            "total_dilewati": total_skipped,
+            "baris_awal": len(base_df) + sum(len(pd.read_csv(p)) if os.path.splitext(p)[1].lower() == ".csv" else len(pd.read_excel(p)) for p in new_paths),
+            "baris_akhir": len(final_df),
+            "kolom_awal": len(base_df.columns),
+            "kolom_akhir": len(final_df.columns),
+            "langkah": langkah,
+            "skipped_rows": skipped_df,
+        }
+        self.last_report = report
+        return final_df, report
 
     def clean_sheets(self, file_path, sheets=None, all_sheets=False):
         """
@@ -478,12 +679,19 @@ class CleaningEngine:
 
         active_report_for_extras = report if isinstance(report, dict) else self.last_report
         orphan_df = None
+        skipped_append_df = None
         if isinstance(active_report_for_extras, dict) and active_report_for_extras.get("is_join"):
             orphan_df = active_report_for_extras.get("orphan_rows")
             if orphan_df is None or orphan_df.empty:
                 orphan_df = pd.DataFrame(columns=["Tahap", "File Asal", "Alasan"])
             if len(orphan_df) > 1_048_576:
                 raise ValueError("Data orphan terlalu besar untuk satu sheet Excel (maks 1.048.576 baris)")
+        if isinstance(active_report_for_extras, dict) and active_report_for_extras.get("is_append"):
+            skipped_append_df = active_report_for_extras.get("skipped_rows")
+            if skipped_append_df is None or skipped_append_df.empty:
+                skipped_append_df = pd.DataFrame(columns=["File Asal", "Alasan"])
+            if len(skipped_append_df) > 1_048_576:
+                raise ValueError("Data baris dilewati terlalu besar untuk satu sheet Excel (maks 1.048.576 baris)")
 
         # Pastikan direktori output ada
         out_dir = os.path.dirname(output_path)
@@ -575,6 +783,19 @@ class CleaningEngine:
                     cell = ws_orphan.cell(row=row_idx, column=col_idx)
                     cell.value = None if pd.isna(value) else value
             styler.style_worksheet(ws_orphan, orphan_df, add_total_row=False)
+
+        if skipped_append_df is not None:
+            if "Baris Dilewati" in wb.sheetnames:
+                del wb["Baris Dilewati"]
+            ws_skipped = wb.create_sheet(title="Baris Dilewati")
+            ws_skipped.views.sheetView[0].showGridLines = True
+            for col_idx, col_name in enumerate(skipped_append_df.columns, start=1):
+                ws_skipped.cell(row=1, column=col_idx, value=col_name)
+            for row_idx, row_values in enumerate(skipped_append_df.itertuples(index=False), start=2):
+                for col_idx, value in enumerate(row_values, start=1):
+                    cell = ws_skipped.cell(row=row_idx, column=col_idx)
+                    cell.value = None if pd.isna(value) else value
+            styler.style_worksheet(ws_skipped, skipped_append_df, add_total_row=False)
 
         wb.save(output_path)
         print(f"💾 File Excel profesional berhasil disimpan ke: {output_path}")
