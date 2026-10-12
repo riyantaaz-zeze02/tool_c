@@ -9,6 +9,7 @@ Cara penggunaan:
 
 import argparse
 import os
+import shutil
 import sys
 import yaml
 
@@ -379,6 +380,62 @@ def process_joined_files(file_paths, keys, args, engine, config):
     return True
 
 
+def process_append_files(base_path, new_paths, args, engine, config):
+    """Append cleaned rows to a base file and export the audit report."""
+    out_format = args.format.lower()
+    extension = ".xlsx" if out_format == "excel" else ".csv"
+    if args.output:
+        out_file = os.path.join(args.output, f"{os.path.splitext(os.path.basename(base_path))[0]}_append_bersih{extension}") if os.path.isdir(args.output) else args.output
+    else:
+        base_name = os.path.splitext(os.path.basename(base_path))[0]
+        out_file = os.path.join("data", "output", f"{base_name}_append_bersih{extension}")
+
+    same_file = os.path.normcase(os.path.abspath(base_path)) == os.path.normcase(os.path.abspath(out_file))
+    if same_file and not args.overwrite:
+        print("❌ Output sama dengan file dasar. Tambahkan --overwrite untuk membuat backup .bak dan melanjutkan.")
+        return False
+
+    formatting_cfg = config.get("formatting", {})
+    try:
+        final, report = engine.append_files(
+            base_path,
+            new_paths,
+            dedupe_keys=args.dedupe_keys,
+            source_col="Sumber File" if args.tag_source else None,
+        )
+        output_dir = os.path.dirname(out_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        if same_file:
+            shutil.copy2(base_path, base_path + ".bak")
+
+        if out_format == "excel":
+            engine.export_excel(
+                final,
+                out_file,
+                report=report,
+                theme=args.theme or formatting_cfg.get("theme", "corporate_blue"),
+                currency=args.currency or formatting_cfg.get("currency", "IDR"),
+                sheet_name=formatting_cfg.get("sheet_name", "Data Bersih"),
+                add_total_row=not args.no_total,
+                include_summary_sheet=not args.no_summary,
+            )
+        else:
+            final.to_csv(out_file, index=False)
+            print(f"💾 File CSV append berhasil disimpan ke: {out_file}")
+    except Exception as error:
+        print(f"❌ Gagal menjalankan append: {error}")
+        return False
+
+    print("\n📊 Ringkasan Append:")
+    print(f"   - Baris base: {report['base_rows']}")
+    print(f"   - Ditambahkan: {report['total_ditambahkan']}")
+    print(f"   - Dilewati: {report['total_dilewati']}")
+    print(f"   - Baris akhir: {report['baris_akhir']}")
+    print("=" * 60)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="ExcelCleaner Pro — Tool Pembersih Data & Formatter Excel Profesional"
@@ -465,6 +522,12 @@ def main():
         help="Analisis header beberapa file lalu rekomendasikan merge atau join",
         default=None,
     )
+    parser.add_argument("--append", action="store_true", help="Tambahkan baris baru ke file input tanpa membersihkan ulang base")
+    parser.add_argument("--new", nargs="+", default=None, help="File baru untuk mode append; path dapat dipisahkan spasi atau koma")
+    parser.add_argument("--new-folder", default=None, help="Folder berisi file baru untuk mode append")
+    parser.add_argument("--dedupe-keys", default=None, help="Kolom kunci deduplikasi, dipisahkan koma")
+    parser.add_argument("--tag-source", action="store_true", help="Tambahkan kolom Sumber File")
+    parser.add_argument("--overwrite", action="store_true", help="Izinkan output menimpa base setelah membuat backup .bak")
 
 
     args = parser.parse_args()
@@ -476,18 +539,47 @@ def main():
 
     if args.merge and args.merge_folder:
         parser.error("Gunakan salah satu --merge atau --merge-folder, bukan keduanya.")
-    active_modes = [bool(args.batch), bool(args.merge or args.merge_folder), bool(args.join), bool(args.auto)]
+    active_modes = [bool(args.batch), bool(args.merge or args.merge_folder), bool(args.join), bool(args.auto), bool(args.append)]
     if sum(active_modes) > 1:
-        parser.error("Gunakan hanya satu mode: input tunggal, --batch, --merge, --join, atau --auto.")
+        parser.error("Gunakan hanya satu mode: input tunggal, --batch, --merge, --join, --auto, atau --append.")
     if args.join and not args.keys:
         parser.error("Mode --join membutuhkan --keys.")
     if not args.input and not (args.merge or args.merge_folder or args.join or args.auto):
         parser.error("Input file wajib diisi, kecuali menggunakan --merge, --merge-folder, --join, atau --auto.")
+    if args.append and not (args.new or args.new_folder):
+        parser.error("Mode --append membutuhkan --new atau --new-folder.")
+    if not args.append and (args.new or args.new_folder or args.dedupe_keys or args.tag_source or args.overwrite):
+        parser.error("Opsi --new, --new-folder, --dedupe-keys, --tag-source, dan --overwrite hanya berlaku dengan --append.")
 
     config = load_yaml_config(args.config)
     engine = CleaningEngine(config=config)
 
-    if args.auto:
+    if args.append:
+        valid_exts = [".csv", ".xlsx", ".xls"]
+        files = [path.strip() for item in (args.new or []) for path in item.split(",") if path.strip()]
+        if args.new_folder:
+            if not os.path.isdir(args.new_folder):
+                parser.error(f"'{args.new_folder}' bukan folder yang valid untuk --new-folder.")
+            files.extend(
+                os.path.join(args.new_folder, name)
+                for name in sorted(os.listdir(args.new_folder))
+                if os.path.splitext(name)[1].lower() in valid_exts
+            )
+        if not files:
+            parser.error("Tidak ditemukan file baru untuk mode --append.")
+        invalid_files = [path for path in files if not os.path.isfile(path)]
+        unsupported_files = [path for path in files if os.path.splitext(path)[1].lower() not in valid_exts]
+        if invalid_files:
+            parser.error(f"File baru tidak ditemukan: {', '.join(invalid_files)}")
+        if unsupported_files:
+            parser.error(f"Format file baru tidak didukung: {', '.join(unsupported_files)}")
+        if not os.path.isfile(args.input):
+            parser.error(f"File dasar '{args.input}' tidak ditemukan.")
+        args.dedupe_keys = [key.strip() for key in args.dedupe_keys.split(",") if key.strip()] if args.dedupe_keys else None
+        if not process_append_files(args.input, files, args, engine, config):
+            sys.exit(1)
+
+    elif args.auto:
         files = [path.strip() for path in args.auto.split(",") if path.strip()]
         valid_exts = [".csv", ".xlsx", ".xls"]
         if len(files) < 2:

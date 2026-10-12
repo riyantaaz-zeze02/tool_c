@@ -153,7 +153,7 @@ with st.sidebar:
     output_format = st.radio("Format Output", options=["Excel", "CSV"], horizontal=True)
     uploaded_config = st.file_uploader("Config YAML (opsional)", type=["yaml", "yml"], key="config_upload")
 
-mode_options = ["Single File", "Gabungkan (Merge)", "Join Berantai", "Deteksi Otomatis"]
+mode_options = ["Single File", "Append", "Gabungkan (Merge)", "Join Berantai", "Deteksi Otomatis"]
 work_mode = st.radio(
     "Mode Kerja",
     options=mode_options,
@@ -163,12 +163,20 @@ work_mode = st.radio(
 )
 col_upload, col_sample = st.columns([3, 1])
 with col_upload:
-    uploaded_files = st.file_uploader("Unggah File Data (.csv atau .xlsx)", type=["csv", "xlsx", "xls"], help="Mendukung format CSV dan Excel", accept_multiple_files=True)
+    upload_label = "Unggah File Baru untuk Append" if work_mode == "Append" else "Unggah File Data (.csv atau .xlsx)"
+    uploaded_files = st.file_uploader(upload_label, type=["csv", "xlsx", "xls"], help="Mendukung format CSV dan Excel", accept_multiple_files=True)
 with col_sample:
     st.write("")
     st.write("")
     use_sample = st.button("📂 Gunakan Data Contoh")
 
+append_base_file = None
+if work_mode == "Append":
+    append_base_file = st.file_uploader(
+        "Pilih File Dasar",
+        type=["csv", "xlsx", "xls"],
+        key="append_base_upload",
+    )
 
 df_raw = None
 file_label = ""
@@ -187,9 +195,20 @@ single_selected_sheets = None
 single_all_sheets = False
 cleaned_sheet_results = None
 cleaned_sheet_reports = None
+append_temp_dir = None
+append_file_paths = []
+append_dedupe_keys = []
+append_source_column = None
+append_cleaned = None
+append_report = None
 
 if work_mode == "Single File" and len(uploaded_files) > 1:
     st.warning(f"Kamu pilih mode Single File tapi upload {len(uploaded_files)} file — hanya file pertama yang akan diproses, atau ganti mode ke Merge/Join.")
+elif work_mode == "Append":
+    if append_base_file is None:
+        st.info("Pilih satu file dasar untuk memulai append.")
+    elif not uploaded_files:
+        st.info("Unggah minimal satu file baru untuk ditambahkan ke file dasar.")
 elif work_mode != "Single File" and uploaded_files and len(uploaded_files) < 2:
     st.warning(f"Mode {work_mode} membutuhkan minimal 2 file. Upload file tambahan atau pilih mode Single File.")
 
@@ -235,6 +254,65 @@ if uploaded_files and work_mode == "Single File":
             df_raw = read_uploaded_dataframe(uploaded_file)
     except Exception as error:
         st.error(f"Gagal membaca file: {error}")
+elif work_mode == "Append" and append_base_file is not None and uploaded_files:
+    try:
+        base_sheets = get_uploaded_sheet_names(append_base_file)
+        append_base_sheet = base_sheets[0] if base_sheets else 0
+        if len(base_sheets) > 1:
+            append_base_sheet = st.selectbox(
+                f"Sheet dasar: {append_base_file.name}",
+                options=base_sheets,
+                key="append_base_sheet",
+            )
+        append_sheet_names = []
+        append_preview_frames = []
+        for index, uploaded_file in enumerate(uploaded_files):
+            available_sheets = get_uploaded_sheet_names(uploaded_file)
+            selected_sheet = available_sheets[0] if available_sheets else 0
+            if len(available_sheets) > 1:
+                selected_sheet = st.selectbox(
+                    f"Sheet baru: {uploaded_file.name}",
+                    options=available_sheets,
+                    key=f"append_sheet_{index}",
+                )
+            append_sheet_names.append(selected_sheet)
+            if available_sheets:
+                preview_df = pd.read_excel(
+                    io.BytesIO(uploaded_file.getvalue()), sheet_name=selected_sheet
+                )
+            else:
+                preview_df = read_uploaded_dataframe(uploaded_file)
+            append_preview_frames.append((uploaded_file.name, preview_df))
+
+        base_preview = read_uploaded_dataframe(append_base_file) if not base_sheets else pd.read_excel(
+            io.BytesIO(append_base_file.getvalue()), sheet_name=append_base_sheet
+        )
+        st.subheader("File Append")
+        st.write(f"Dasar: **{append_base_file.name}** ({len(base_preview)} baris)")
+        st.dataframe(
+            pd.DataFrame([
+                {"Nama File Baru": name, "Jumlah Baris": len(frame), "Jumlah Kolom": len(frame.columns)}
+                for name, frame in append_preview_frames
+            ]),
+            hide_index=True,
+            use_container_width=True,
+        )
+        key_input = st.text_input("Kunci deduplikasi (pisahkan dengan koma; kosong = semua kolom)", key="append_dedupe_keys")
+        append_dedupe_keys = [key.strip() for key in key_input.split(",") if key.strip()]
+        tag_source = st.checkbox("Tambahkan kolom sumber file", key="append_tag_source")
+        if tag_source:
+            append_source_column = st.text_input("Nama kolom sumber", value="Sumber File", key="append_source_column")
+
+        append_temp_dir, append_file_paths = save_uploaded_files(
+            [append_base_file, *uploaded_files],
+            [append_base_sheet, *append_sheet_names],
+        )
+        df_raw = pd.concat([base_preview, *(frame for _, frame in append_preview_frames)], ignore_index=True)
+        file_label = f"append_{len(uploaded_files)}file"
+    except Exception as error:
+        if append_temp_dir:
+            shutil.rmtree(append_temp_dir, ignore_errors=True)
+        st.error(f"Gagal menyiapkan file append: {error}")
 elif uploaded_files and work_mode == "Gabungkan (Merge)" and len(uploaded_files) >= 2:
     try:
         preview_rows = []
@@ -378,7 +456,7 @@ elif uploaded_files and work_mode == "Deteksi Otomatis" and len(uploaded_files) 
     finally:
         if auto_temp_dir:
             shutil.rmtree(auto_temp_dir, ignore_errors=True)
-elif uploaded_files and len(uploaded_files) >= 2:
+elif uploaded_files and len(uploaded_files) >= 2 and work_mode != "Append":
     st.info(f"{work_mode} dipilih untuk {len(uploaded_files)} file. Alur pemrosesan mode ini akan tersedia pada fase berikutnya. Semua konfigurasi sidebar tetap aktif untuk mode ini.")
 elif use_sample and work_mode == "Single File":
     sample_path = os.path.join("data", "input", "contoh_data.csv")
@@ -441,16 +519,42 @@ if df_raw is not None:
         finally:
             if join_temp_dir:
                 shutil.rmtree(join_temp_dir, ignore_errors=True)
+    elif work_mode == "Append":
+        try:
+            append_cleaned, append_report = engine.append_files(
+                append_file_paths[0],
+                append_file_paths[1:],
+                dedupe_keys=append_dedupe_keys or None,
+                source_col=append_source_column,
+            )
+            df_clean, report = append_cleaned, append_report
+        except Exception as error:
+            st.error(f"Gagal menjalankan append: {error}")
+            st.stop()
+        finally:
+            if append_temp_dir:
+                shutil.rmtree(append_temp_dir, ignore_errors=True)
     else:
         df_clean, report = engine.clean(df_raw)
 
     st.markdown("---")
     st.subheader(f"📊 Hasil Pembersihan: {file_label}")
-    metric_columns = st.columns(5 if report.get("is_merge") or report.get("is_join") else 4)
-    with metric_columns[0]:
-        st.metric("Baris Awal", report["baris_awal"])
-    with metric_columns[1]:
-        st.metric("Baris Akhir (Bersih)", report["baris_akhir"])
+    metric_columns = st.columns(4 if report.get("is_append") else 5 if report.get("is_merge") or report.get("is_join") else 4)
+    if report.get("is_append"):
+        with metric_columns[0]:
+            st.metric("Baris Base", report["base_rows"])
+        with metric_columns[1]:
+            st.metric("Ditambahkan", report["total_ditambahkan"])
+        with metric_columns[2]:
+            st.metric("Dilewati", report["total_dilewati"])
+        with metric_columns[3]:
+            st.metric("Baris Akhir", report["baris_akhir"])
+        missing_metric_column = None
+    else:
+        with metric_columns[0]:
+            st.metric("Baris Awal", report["baris_awal"])
+        with metric_columns[1]:
+            st.metric("Baris Akhir (Bersih)", report["baris_akhir"])
     if report.get("is_merge"):
         with metric_columns[2]:
             st.metric("Duplikat Antar File", report["duplikat_antar_file"])
@@ -463,17 +567,22 @@ if df_raw is not None:
         with metric_columns[3]:
             st.metric("Duplikat Dihapus", report["total_duplikat_dihapus"])
         missing_metric_column = metric_columns[4]
+    elif report.get("is_append"):
+        missing_metric_column = None
     else:
         with metric_columns[2]:
             st.metric("Duplikat Dihapus", report["total_duplikat_dihapus"])
         missing_metric_column = metric_columns[3]
-    with missing_metric_column:
-        missing_sebelum = sum(report["langkah"]["missing"]["missing_sebelum"].values())
-        st.metric("Missing Values Diperbaiki", missing_sebelum)
+    if missing_metric_column is not None:
+        with missing_metric_column:
+            missing_sebelum = sum(report["langkah"]["missing"]["missing_sebelum"].values())
+            st.metric("Missing Values Diperbaiki", missing_sebelum)
 
     tab_names = ["✨ Data Bersih", "🔍 Sebelum vs Sesudah", "📋 Lembar Audit Trail"]
     if report.get("is_join"):
         tab_names.append("⚠️ Baris Ter-drop")
+    if report.get("is_append"):
+        tab_names.append("Baris Dilewati")
     tabs = st.tabs(tab_names)
     tab1, tab2, tab3 = tabs[:3]
     with tab1:
@@ -520,7 +629,9 @@ if df_raw is not None:
         else:
             download_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             download_extension = ".xlsx"
-        if report.get("is_merge"):
+        if report.get("is_append"):
+            base_clean_name = f"append_{len(uploaded_files)}file_bersih.xlsx"
+        elif report.get("is_merge"):
             base_clean_name = f"gabungan_{report['total_files']}file_bersih.xlsx"
         elif report.get("is_join"):
             base_clean_name = f"join_{report['total_files']}file_bersih.xlsx"
@@ -530,6 +641,8 @@ if df_raw is not None:
             base_clean_name = f"gabungan_{report['total_files']}file_bersih.csv"
         elif output_format == "CSV" and report.get("is_join"):
             base_clean_name = f"join_{report['total_files']}file_bersih.csv"
+        elif output_format == "CSV" and report.get("is_append"):
+            base_clean_name = f"append_{len(uploaded_files)}file_bersih.csv"
         st.download_button(label=f"📥 Unduh Hasil ({base_clean_name})", data=excel_bytes, file_name=base_clean_name, mime=download_mime)
         if single_temp_dir:
             shutil.rmtree(single_temp_dir, ignore_errors=True)
@@ -544,15 +657,30 @@ if df_raw is not None:
             st.dataframe(df_clean.head(15), use_container_width=True)
 
     with tab3:
-        st.markdown("**Aksi yang Dilakukan pada Setiap Kolom:**")
-        audit_rows = []
-        for step in ["number", "date", "missing", "text"]:
-            for action in report["langkah"].get(step, {}).get("aksi", []):
-                audit_rows.append({"Tahap": step.capitalize(), "Aksi": action})
-        if audit_rows:
-            st.table(pd.DataFrame(audit_rows))
+        if report.get("is_append"):
+            st.markdown("**Rincian per file:**")
+            st.dataframe(pd.DataFrame(report["file_details"]), hide_index=True, use_container_width=True)
+            cleaning_rows = []
+            for item in report.get("langkah", []):
+                clean_report = item.get("report", {})
+                for step in ("number", "date", "missing", "text"):
+                    for action in clean_report.get("langkah", {}).get(step, {}).get("aksi", []):
+                        cleaning_rows.append({"File": item.get("file", ""), "Tahap": step.capitalize(), "Aksi": action})
+            st.markdown("**Pembersihan baris baru:**")
+            if cleaning_rows:
+                st.dataframe(pd.DataFrame(cleaning_rows), hide_index=True, use_container_width=True)
+            else:
+                st.info("Baris baru tidak memerlukan perubahan cleaning.")
         else:
-            st.info("Data input sudah sangat bersih, tidak ada transformasi agresif.")
+            st.markdown("**Aksi yang Dilakukan pada Setiap Kolom:**")
+            audit_rows = []
+            for step in ["number", "date", "missing", "text"]:
+                for action in report["langkah"].get(step, {}).get("aksi", []):
+                    audit_rows.append({"Tahap": step.capitalize(), "Aksi": action})
+            if audit_rows:
+                st.table(pd.DataFrame(audit_rows))
+            else:
+                st.info("Data input sudah sangat bersih, tidak ada transformasi agresif.")
 
     if report.get("is_join"):
         with tabs[3]:
@@ -561,8 +689,17 @@ if df_raw is not None:
                 st.success("Semua baris berhasil di-join, tidak ada yang hilang.")
             else:
                 st.dataframe(orphan_rows, hide_index=True, use_container_width=True)
+    if report.get("is_append"):
+        with tabs[3]:
+            skipped_rows = report["skipped_rows"]
+            if skipped_rows.empty:
+                st.success("Tidak ada baris yang dilewati.")
+            else:
+                st.dataframe(skipped_rows, hide_index=True, use_container_width=True)
 elif use_sample:
     st.info("Data contoh hanya tersedia untuk mode Single File. Pilih mode tersebut untuk memprosesnya.")
+elif work_mode == "Append":
+    st.info("Pilih file dasar dan unggah file baru untuk melihat hasil append.")
 elif work_mode == "Join Berantai" and uploaded_files:
     st.info("Pilih key untuk setiap pasangan file, lalu klik 'Proses Join'.")
 else:

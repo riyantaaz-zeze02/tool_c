@@ -43,6 +43,9 @@ Menghasilkan sheet kedua bernama **`Cleaning Summary`** pada file Excel output y
 * Jumlah duplikat yang dihapus.
 * Rincian setiap aksi pembersihan yang dilakukan per kolom.
 
+### 4. ➕ Append Data Baru
+Tambahkan satu atau beberapa file ke file dasar tanpa membersihkan ulang baris base. Baris baru dibersihkan sebelum ditambahkan, duplikat dapat diperiksa memakai seluruh kolom atau kunci pilihan, dan Excel summary mencatat baris base, ditambahkan, dilewati, rincian per file, serta aksi cleaning pada file baru.
+
 ---
 
 ## 📁 Struktur Proyek
@@ -103,6 +106,7 @@ streamlit run app.py
 ```
 **Fitur Web Studio:**
 - Drag-and-drop file CSV atau Excel.
+- Mode **Append** untuk memilih satu file dasar dan satu atau beberapa file baru, menentukan sheet Excel, kunci deduplikasi, dan kolom sumber.
 - Tombol 1-klik *"Gunakan Data Contoh"*.
 - Live preview sebelum vs sesudah pembersihan.
 - Pilih tema warna, mata uang, dan strategi missing value langsung dari panel samping.
@@ -148,6 +152,13 @@ Gunakan perintah terminal yang fleksibel:
   python cli.py --join "pelanggan.xlsx,transaksi.xlsx,produk.xlsx" --keys "ID,ID_Produk"
   ```
   Join dilakukan berurutan sebagai `left join`: file pertama digabung dengan file kedua memakai key pertama, lalu hasilnya digabung dengan file berikutnya memakai key berikutnya. Jumlah key wajib selalu satu lebih sedikit dari jumlah file. `Cleaning Summary` mencatat baris matched, unmatched, dan match rate untuk setiap tahap.
+
+* **Mode Append (Menambahkan Baris Baru ke File Dasar):**
+  ```bash
+  python cli.py data/input/base.csv --append --new data/input/jan.csv data/input/feb.csv --dedupe-keys "Order ID" --tag-source -o data/output/base_append.xlsx
+  python cli.py data/input/base.csv --append --new-folder data/input/baru/ --format csv
+  ```
+  `--new` menerima beberapa path (atau daftar dipisahkan koma), sedangkan `--new-folder` membaca file CSV/Excel dalam folder. `--dedupe-keys` menerima daftar kolom yang dipisahkan koma; tanpa opsi ini seluruh kolom dipakai. `--tag-source` menambahkan kolom `Sumber File`. Excel output menyertakan Cleaning Summary append dan sheet `Baris Dilewati`. Output yang menunjuk ke file base ditolak kecuali `--overwrite` diberikan; sebelum menulis, base disalin ke file `base.ext.bak`.
 
 * **Mode Auto (Analisis Struktur Sebelum Memilih Mode):**
   ```bash
